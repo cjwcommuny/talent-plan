@@ -39,12 +39,12 @@ pub mod tests {
     use junk::{add_service, Client as JunkClient, Service as Junk};
 
     // Hand-written protobuf messages.
-    #[derive(Clone, PartialEq, Message)]
+    #[derive(Clone, PartialEq, Eq, Message)]
     pub struct JunkArgs {
         #[prost(int64, tag = "1")]
         pub x: i64,
     }
-    #[derive(Clone, PartialEq, Message)]
+    #[derive(Clone, PartialEq, Eq, Message)]
     pub struct JunkReply {
         #[prost(string, tag = "1")]
         pub x: String,
