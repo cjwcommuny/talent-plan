@@ -1,15 +1,15 @@
-use std::cmp::Ordering;
-use std::result;
+
+
 use std::sync::mpsc::{channel, Receiver};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
 
 use futures::channel::mpsc::UnboundedSender;
-use futures::channel::{mpsc, oneshot};
+use futures::channel::{oneshot};
 use futures::TryFutureExt;
 use labrpc::Error::{Other, Recv};
-use linearizability::models::Op;
+
 use tokio::sync::mpsc::Sender;
-use tokio::sync::oneshot::error::RecvError;
+
 
 #[cfg(test)]
 pub mod config;
@@ -255,7 +255,7 @@ pub struct Node {
 
 impl Node {
     /// Create a new raft service.
-    pub fn new(raft: Raft) -> Node {
+    pub fn new(_raft: Raft) -> Node {
         // Your code here.
         // Node {
         //     raft: raft,
@@ -355,7 +355,7 @@ impl RaftService for Node {
             .send(Message::RequestVote { args, sender })
             .map_err(|_| Other(String::from("sender error")))
             .await?;
-        let result = receiver.await.map_err(Recv);
-        result
+        
+        receiver.await.map_err(Recv)
     }
 }

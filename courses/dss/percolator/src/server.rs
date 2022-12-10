@@ -28,7 +28,7 @@ impl timestamp::Service for TimestampOracle {
 // Key is a tuple (raw key, timestamp).
 pub type Key = (Vec<u8>, u64);
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Value {
     Timestamp(u64),
     Vector(Vec<u8>),

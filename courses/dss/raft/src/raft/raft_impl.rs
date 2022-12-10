@@ -100,7 +100,7 @@ fn request_vote<A>(
         let voted_for = state.persistent_state.voted_for;
         current_term > args.term
             || (current_term == args.term
-                && (voted_for == None || voted_for == Some(args.candidate_id as usize)))
+                && (voted_for.is_none() || voted_for == Some(args.candidate_id as usize)))
     };
     if log_ok && term_ok {
         state.persistent_state.current_term += 1;

@@ -21,7 +21,7 @@ fn uniqstring() -> String {
 }
 
 /// A log entry.
-#[derive(Clone, PartialEq, Message)]
+#[derive(Clone, PartialEq, Eq, Message)]
 pub struct Entry {
     #[prost(uint64, tag = "100")]
     pub x: u64,

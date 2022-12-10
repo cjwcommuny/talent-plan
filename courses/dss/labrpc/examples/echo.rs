@@ -4,7 +4,7 @@ use prost_derive::Message;
 use labrpc::*;
 
 /// A Hand-written protobuf messages
-#[derive(Clone, PartialEq, Message)]
+#[derive(Clone, PartialEq, Eq, Message)]
 pub struct Echo {
     #[prost(int64, tag = "1")]
     pub x: i64,
