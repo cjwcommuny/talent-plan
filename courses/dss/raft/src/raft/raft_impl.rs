@@ -29,11 +29,11 @@ pub enum Task {
     },
 }
 
-impl Into<LogState> for &LogStateMessage {
-    fn into(self) -> LogState {
+impl From<&LogStateMessage> for LogState {
+    fn from(x: &LogStateMessage) -> Self {
         LogState {
-            term: self.last_log_term,
-            index: self.last_log_index as usize,
+            term: x.last_log_term,
+            index: x.last_log_index as usize,
         }
     }
 }
@@ -88,10 +88,7 @@ pub struct RaftState<A> {
 
 impl<A> RaftState<A> {
     pub(crate) fn is_leader(&self) -> bool {
-        match self.volatile_state.role {
-            Role::Leader { .. } => true,
-            _ => false,
-        }
+        matches!(self.volatile_state.role, Role::Leader { .. })
     }
 
     pub(crate) fn get_term(&self) -> TermId {
@@ -137,8 +134,8 @@ fn request_vote<A>(
 }
 
 fn append_entries<A>(
-    mut state: RaftState<A>,
-    args: &AppendEntriesArgs,
+    _state: RaftState<A>,
+    _args: &AppendEntriesArgs,
 ) -> (AppendEntriesReply, RaftState<A>) {
     todo!()
 }

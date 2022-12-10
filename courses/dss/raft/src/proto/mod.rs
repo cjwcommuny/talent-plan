@@ -41,7 +41,7 @@ pub mod raftpb {
         pub prev_log_term: u64,
     }
 
-    #[derive(Clone, PartialEq, prost::Message)]
+    #[derive(Clone, PartialEq, Eq, prost::Message)]
     pub struct AppendEntriesReply {
         #[prost(uint64, tag = "1")]
         pub term: u64,
