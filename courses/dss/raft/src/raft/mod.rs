@@ -1,18 +1,28 @@
-use std::sync::mpsc::{sync_channel, Receiver};
-use std::sync::Arc;
+use std::cmp::Ordering;
+use std::result;
+use std::sync::mpsc::{channel, Receiver};
+use std::sync::{Arc, Mutex};
 
 use futures::channel::mpsc::UnboundedSender;
+use futures::channel::{mpsc, oneshot};
+use futures::TryFutureExt;
+use labrpc::Error::{Other, Recv};
+use linearizability::models::Op;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::oneshot::error::RecvError;
 
 #[cfg(test)]
 pub mod config;
 pub mod errors;
 pub mod persister;
+mod raft_impl;
 #[cfg(test)]
 mod tests;
 
 use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
+use crate::raft::raft_impl::RaftState;
 
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
@@ -56,10 +66,10 @@ pub struct Raft {
     persister: Box<dyn Persister>,
     // this peer's index into peers[]
     me: usize,
-    state: Arc<State>,
     // Your data here (2A, 2B, 2C).
     // Look at the paper's Figure 2 for a description of what
     // state a Raft server must maintain.
+    raft_state: RaftState<()>,
 }
 
 impl Raft {
@@ -84,13 +94,13 @@ impl Raft {
             peers,
             persister,
             me,
-            state: Arc::default(),
+            raft_state: RaftState::default(),
         };
 
         // initialize from state persisted before a crash
         rf.restore(&raft_state);
 
-        crate::your_code_here((rf, apply_ch))
+        crate::your_code_here((rf, apply_ch)) // TODO
     }
 
     /// save Raft's persistent state to stable storage,
@@ -156,8 +166,14 @@ impl Raft {
         // });
         // rx
         // ```
-        let (tx, rx) = sync_channel::<Result<RequestVoteReply>>(1);
-        crate::your_code_here((server, args, tx, rx))
+        let (tx, rx) = channel();
+        let peer = &self.peers[server];
+        let peer_clone = peer.clone();
+        peer.spawn(async move {
+            let result = peer_clone.request_vote(&args).await.map_err(Error::Rpc);
+            let _ = tx.send(result);
+        });
+        rx
     }
 
     fn start<M>(&self, command: &M) -> Result<(u64, u64)>
@@ -203,11 +219,17 @@ impl Raft {
         self.snapshot(0, &[]);
         let _ = self.send_request_vote(0, Default::default());
         self.persist();
-        let _ = &self.state;
         let _ = &self.me;
         let _ = &self.persister;
         let _ = &self.peers;
     }
+}
+
+enum Message {
+    RequestVote {
+        args: RequestVoteArgs,
+        sender: oneshot::Sender<RequestVoteReply>,
+    },
 }
 
 // Choose concurrency paradigm.
@@ -227,13 +249,18 @@ impl Raft {
 #[derive(Clone)]
 pub struct Node {
     // Your code here.
+    raft: Arc<Raft>,
+    message_sender: Sender<Message>,
 }
 
 impl Node {
     /// Create a new raft service.
     pub fn new(raft: Raft) -> Node {
         // Your code here.
-        crate::your_code_here(raft)
+        // Node {
+        //     raft: raft,
+        // }
+        todo!()
     }
 
     /// the service using Raft (e.g. a k/v server) wants to start
@@ -260,18 +287,12 @@ impl Node {
 
     /// The current term of this peer.
     pub fn term(&self) -> u64 {
-        // Your code here.
-        // Example:
-        // self.raft.term
-        crate::your_code_here(())
+        self.raft.raft_state.get_term()
     }
 
     /// Whether this peer believes it is the leader.
     pub fn is_leader(&self) -> bool {
-        // Your code here.
-        // Example:
-        // self.raft.leader_id == self.id
-        crate::your_code_here(())
+        self.raft.raft_state.is_leader()
     }
 
     /// The current state of this peer.
@@ -329,6 +350,12 @@ impl RaftService for Node {
     // CAVEATS: Please avoid locking or sleeping here, it may jam the network.
     async fn request_vote(&self, args: RequestVoteArgs) -> labrpc::Result<RequestVoteReply> {
         // Your code here (2A, 2B).
-        crate::your_code_here(args)
+        let (sender, receiver) = oneshot::channel();
+        self.message_sender
+            .send(Message::RequestVote { args, sender })
+            .map_err(|_| Other(String::from("sender error")))
+            .await?;
+        let result = receiver.await.map_err(Recv);
+        result
     }
 }
