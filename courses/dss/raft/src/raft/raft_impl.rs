@@ -1,4 +1,7 @@
-use crate::proto::raftpb::{LogStateMessage, RequestVoteArgs, RequestVoteReply};
+use crate::proto::raftpb::{
+    AppendEntriesArgs, AppendEntriesReply, LogStateMessage, RequestVoteArgs, RequestVoteReply,
+};
+use futures::channel::oneshot;
 
 type NodeId = usize;
 type TermId = u64;
@@ -13,6 +16,17 @@ struct Log<T> {
 struct LogState {
     term: TermId,
     index: usize,
+}
+
+pub enum Task {
+    RequestVote {
+        args: RequestVoteArgs,
+        sender: oneshot::Sender<RequestVoteReply>,
+    },
+    AppendEntries {
+        args: AppendEntriesArgs,
+        sender: oneshot::Sender<AppendEntriesReply>,
+    },
 }
 
 impl Into<LogState> for &LogStateMessage {
@@ -76,7 +90,7 @@ impl<A> RaftState<A> {
     pub(crate) fn is_leader(&self) -> bool {
         match self.volatile_state.role {
             Role::Leader { .. } => true,
-            _ => false
+            _ => false,
         }
     }
 
@@ -120,4 +134,11 @@ fn request_vote<A>(
         };
         (response, state)
     }
+}
+
+fn append_entries<A>(
+    mut state: RaftState<A>,
+    args: &AppendEntriesArgs,
+) -> (AppendEntriesReply, RaftState<A>) {
+    todo!()
 }

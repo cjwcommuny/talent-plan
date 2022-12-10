@@ -1,15 +1,12 @@
-
-
 use std::sync::mpsc::{channel, Receiver};
-use std::sync::{Arc};
+use std::sync::Arc;
 
 use futures::channel::mpsc::UnboundedSender;
-use futures::channel::{oneshot};
+use futures::channel::oneshot;
 use futures::TryFutureExt;
 use labrpc::Error::{Other, Recv};
 
 use tokio::sync::mpsc::Sender;
-
 
 #[cfg(test)]
 pub mod config;
@@ -22,7 +19,7 @@ mod tests;
 use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
-use crate::raft::raft_impl::RaftState;
+use crate::raft::raft_impl::{RaftState, Task};
 
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
@@ -225,13 +222,6 @@ impl Raft {
     }
 }
 
-enum Message {
-    RequestVote {
-        args: RequestVoteArgs,
-        sender: oneshot::Sender<RequestVoteReply>,
-    },
-}
-
 // Choose concurrency paradigm.
 //
 // You can either drive the raft state machine by the rpc framework,
@@ -250,7 +240,7 @@ enum Message {
 pub struct Node {
     // Your code here.
     raft: Arc<Raft>,
-    message_sender: Sender<Message>,
+    message_sender: Sender<Task>,
 }
 
 impl Node {
@@ -350,12 +340,34 @@ impl RaftService for Node {
     // CAVEATS: Please avoid locking or sleeping here, it may jam the network.
     async fn request_vote(&self, args: RequestVoteArgs) -> labrpc::Result<RequestVoteReply> {
         // Your code here (2A, 2B).
-        let (sender, receiver) = oneshot::channel();
-        self.message_sender
-            .send(Message::RequestVote { args, sender })
-            .map_err(|_| Other(String::from("sender error")))
-            .await?;
-        
-        receiver.await.map_err(Recv)
+        add_task_to_queue(&self.message_sender, |sender| Task::RequestVote {
+            args,
+            sender,
+        })
+        .await
     }
+
+    async fn append_entries(&self, args: AppendEntriesArgs) -> labrpc::Result<AppendEntriesReply> {
+        add_task_to_queue(&self.message_sender, |sender| Task::AppendEntries {
+            args,
+            sender,
+        })
+        .await
+    }
+}
+
+async fn add_task_to_queue<F, R>(
+    message_sender: &Sender<Task>,
+    message_constructor: F,
+) -> labrpc::Result<R>
+where
+    F: FnOnce(oneshot::Sender<R>) -> Task,
+{
+    let (sender, receiver) = oneshot::channel();
+    message_sender
+        .send(message_constructor(sender))
+        .map_err(|_| Other(String::from("sender error")))
+        .await?;
+
+    receiver.await.map_err(Recv)
 }
