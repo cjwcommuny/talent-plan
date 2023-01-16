@@ -1,26 +1,23 @@
-use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
+use std::time::Duration;
 
-use futures::channel::mpsc::UnboundedSender;
-use futures::channel::oneshot;
 use futures::TryFutureExt;
+use rand::{Rng, thread_rng};
+use tokio::select;
+use tokio::sync::{mpsc, oneshot};
 use labrpc::Error::{Other, Recv};
-use tokio::sync::mpsc;
-
-use tokio::sync::mpsc::Sender;
+use tokio::time::{Instant, sleep_until};
 
 #[cfg(test)]
 pub mod config;
 pub mod errors;
 pub mod persister;
-mod raft_impl;
 #[cfg(test)]
 mod tests;
 
 use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
-use crate::raft::raft_impl::{RaftI, Task};
 
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
@@ -57,19 +54,116 @@ impl State {
     }
 }
 
-// A single Raft peer.
-pub struct Raft {
+type NodeId = usize;
+type TermId = u64;
+
+struct Config;
+
+impl Config {
+    const ELECTION_TIMEOUT: Duration = Duration::from_millis(0); // TODO
+}
+
+#[derive(Debug)]
+struct Log<T> {
+    content: T,
+    term: TermId,
+}
+
+#[derive(Debug, Eq, PartialEq, PartialOrd, Ord)]
+struct LogState {
+    term: TermId,
+    index: usize,
+}
+
+pub enum Task {
+    RequestVote {
+        args: RequestVoteArgs,
+        sender: futures::channel::oneshot::Sender<RequestVoteReply>,
+    },
+    AppendEntries {
+        args: AppendEntriesArgs,
+        sender: futures::channel::oneshot::Sender<AppendEntriesReply>,
+    },
+}
+
+impl From<&LogStateMessage> for LogState {
+    fn from(x: &LogStateMessage) -> Self {
+        LogState {
+            term: x.last_log_term,
+            index: x.last_log_index as usize,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct PersistentState {
+    current_term: TermId,
+    voted_for: Option<NodeId>,
+    log: Vec<Log<ApplyMsg>>,
+}
+
+impl PersistentState {
+    fn get_log_state(&self) -> Option<LogState> {
+        self.log.last().map(|log| LogState {
+            term: log.term,
+            index: self.log.len() - 1,
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct VolatileServerState {
+    commit_index: usize,
+    last_applied: usize,
+}
+
+#[derive(Debug)]
+struct VolatileLeaderState {
+    next_index: Vec<usize>,
+    match_index: Vec<usize>,
+}
+
+#[derive(Debug)]
+enum Role {
+    Follower(Follower),
+    Candidate(Candidate),
+    Leader(Leader),
+}
+
+#[derive(Debug)]
+struct Leader {
+    state: VolatileLeaderState,
+}
+
+#[derive(Debug, Default)]
+struct Follower {}
+
+#[derive(Debug)]
+struct Candidate {}
+
+impl Default for Role {
+    fn default() -> Self {
+        Role::Follower(Follower::default())
+    }
+}
+
+struct Handle {
     // RPC end points of all peers
     peers: Vec<RaftClient>,
     // Object to hold this peer's persisted state
     persister: Box<dyn Persister>,
     // this peer's index into peers[]
-    me: usize,
-    // Your data here (2A, 2B, 2C).
-    // Look at the paper's Figure 2 for a description of what
-    // state a Raft server must maintain.
-    raft_state: RaftI,
-    message_sender: Sender<Task>,
+    node_id: usize,
+    volatile_state: VolatileServerState,
+    persistent_state: PersistentState,
+    task_sender: mpsc::Sender<Task>,
+    task_receiver: mpsc::Receiver<Task>,
+}
+
+// A single Raft peer.
+pub struct Raft {
+    role: Option<Role>,
+    handle: Handle,
 }
 
 impl Raft {
@@ -85,20 +179,25 @@ impl Raft {
     /// This method must return quickly.
     pub fn new(
         peers: Vec<RaftClient>,
-        me: usize,
+        node_id: NodeId,
         persister: Box<dyn Persister>,
-        apply_ch: UnboundedSender<ApplyMsg>,
+        apply_ch: futures::channel::mpsc::UnboundedSender<ApplyMsg>,
     ) -> Raft {
         let raft_state = persister.raft_state();
 
         // Your initialization code here (2A, 2B, 2C).
-        let (message_sender, message_receiver) = mpsc::channel(Self::BUFFER_SIZE);
+        let (task_sender, task_receiver) = mpsc::channel(Self::BUFFER_SIZE);
         let mut rf = Raft {
-            peers,
-            persister,
-            me,
-            raft_state: RaftI::init(me, message_receiver),
-            message_sender,
+            role: Some(Role::default()),
+            handle: Handle {
+                peers,
+                persister,
+                node_id,
+                volatile_state: VolatileServerState::default(),
+                persistent_state: PersistentState::default(),
+                task_sender,
+                task_receiver,
+            }
         };
 
         // initialize from state persisted before a crash
@@ -157,7 +256,7 @@ impl Raft {
         &self,
         server: usize,
         args: RequestVoteArgs,
-    ) -> Receiver<Result<RequestVoteReply>> {
+    ) -> oneshot::Receiver<Result<RequestVoteReply>> {
         // Your code here if you want the rpc becomes async.
         // Example:
         // ```
@@ -170,8 +269,8 @@ impl Raft {
         // });
         // rx
         // ```
-        let (tx, rx) = channel();
-        let peer = &self.peers[server];
+        let (tx, rx) = oneshot::channel();
+        let peer = &self.handle.peers[server];
         let peer_clone = peer.clone();
         peer.spawn(async move {
             let result = peer_clone.request_vote(&args).await.map_err(Error::Rpc);
@@ -223,7 +322,7 @@ impl Raft {
         self.snapshot(0, &[]);
         let _ = self.send_request_vote(0, Default::default());
         self.persist();
-        let _ = &self.persister;
+        let _ = &self.handle.persister;
     }
 }
 
@@ -280,12 +379,12 @@ impl Node {
 
     /// The current term of this peer.
     pub fn term(&self) -> u64 {
-        self.raft.raft_state.get_term()
+        self.raft.handle.persistent_state.current_term
     }
 
     /// Whether this peer believes it is the leader.
     pub fn is_leader(&self) -> bool {
-        self.raft.raft_state.is_leader()
+        matches!(self.raft.role, Some(Role::Leader { .. }))
     }
 
     /// The current state of this peer.
@@ -343,7 +442,7 @@ impl RaftService for Node {
     // CAVEATS: Please avoid locking or sleeping here, it may jam the network.
     async fn request_vote(&self, args: RequestVoteArgs) -> labrpc::Result<RequestVoteReply> {
         // Your code here (2A, 2B).
-        add_task_to_queue(&self.raft.message_sender, |sender| Task::RequestVote {
+        add_task_to_queue(&self.raft.handle.task_sender, |sender| Task::RequestVote {
             args,
             sender,
         })
@@ -351,7 +450,7 @@ impl RaftService for Node {
     }
 
     async fn append_entries(&self, args: AppendEntriesArgs) -> labrpc::Result<AppendEntriesReply> {
-        add_task_to_queue(&self.raft.message_sender, |sender| Task::AppendEntries {
+        add_task_to_queue(&self.raft.handle.task_sender, |sender| Task::AppendEntries {
             args,
             sender,
         })
@@ -360,17 +459,106 @@ impl RaftService for Node {
 }
 
 async fn add_task_to_queue<F, R>(
-    message_sender: &Sender<Task>,
+    message_sender: &mpsc::Sender<Task>,
     message_constructor: F,
 ) -> labrpc::Result<R>
 where
-    F: FnOnce(oneshot::Sender<R>) -> Task,
+    F: FnOnce(futures::channel::oneshot::Sender<R>) -> Task,
 {
-    let (sender, receiver) = oneshot::channel();
+    let (sender, receiver) = futures::channel::oneshot::channel();
     message_sender
         .send(message_constructor(sender))
         .map_err(|_| Other(String::from("sender error")))
         .await?;
 
     receiver.await.map_err(Recv)
+}
+
+
+impl Raft {
+
+
+    fn append_entries(&mut self, _args: &AppendEntriesArgs) -> AppendEntriesReply {
+        todo!()
+    }
+
+
+
+    async fn raft_main(mut self) {
+        loop {
+            let role = self.role.take().unwrap();
+            let new_role = Self::handle(role, &mut self.handle).await;
+            self.role = Some(new_role);
+        }
+    }
+
+    async fn handle(role: Role, handle: &mut Handle) -> Role {
+        match role {
+            Role::Follower(follower) => handle_follower(follower, handle).await,
+            Role::Candidate(candidate) => handle_candidate(candidate, handle).await,
+            Role::Leader(leader) => handle_leader(leader, handle).await,
+        }
+    }
+}
+
+fn request_vote(role: Role, handle: &mut Handle, args: &RequestVoteArgs) -> (RequestVoteReply, Role) {
+    let log_ok = {
+        let self_log_state = handle.persistent_state.get_log_state();
+        let other_log_state: Option<LogState> = args.log_state.as_ref().map(Into::into);
+        other_log_state >= self_log_state
+    };
+    let term_ok = {
+        let current_term = handle.persistent_state.current_term;
+        let voted_for = handle.persistent_state.voted_for;
+        current_term > args.term
+            || (current_term == args.term
+            && (voted_for.is_none() || voted_for == Some(args.candidate_id as usize)))
+    };
+    if log_ok && term_ok {
+        handle.persistent_state.current_term += 1;
+        let new_role = Role::Follower(Follower::default());
+        handle.persistent_state.voted_for = Some(args.candidate_id as usize);
+        let response = RequestVoteReply {
+            term: handle.persistent_state.current_term,
+            node_id: handle.node_id as u32,
+            vote_granted: true,
+        };
+        (response, new_role)
+    } else {
+        let response = RequestVoteReply {
+            term: handle.persistent_state.current_term,
+            node_id: handle.node_id as u32,
+            vote_granted: false,
+        };
+        (response, role)
+    }
+}
+
+async fn handle_follower(role: Follower, handle: &mut Handle) -> Role {
+    // TODO: random timeout, time function as dependency
+    let failure_timer =
+        sleep_until(Instant::now() + Duration::from_millis(thread_rng().gen_range(100, 200)));
+    select! {
+        _ = failure_timer => {
+                Role::Candidate(Candidate {})
+            }
+        Some(message) = handle.task_receiver.recv() => match message {
+            Task::RequestVote { args, sender } => {
+                let (reply, role) = request_vote(Role::Follower(role), handle, &args);
+                sender.send(reply).unwrap();
+                role
+            }
+            Task::AppendEntries { args, sender } => {
+                sender.send(todo!()).unwrap();
+            }
+        }
+    }
+}
+
+async fn handle_candidate(role: Candidate, handle: &mut Handle) -> Role {
+    todo!()
+}
+
+async fn handle_leader(role: Leader, handle: &mut Handle) -> Role {
+    todo!()
 }
