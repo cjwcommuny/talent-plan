@@ -1,10 +1,22 @@
 use crate::proto::raftpb::{
     AppendEntriesArgs, AppendEntriesReply, LogStateMessage, RequestVoteArgs, RequestVoteReply,
 };
+use crate::raft::ApplyMsg;
 use futures::channel::oneshot;
+use rand::{thread_rng, Rng};
+use std::time::Duration;
+use tokio::select;
+use tokio::sync::mpsc::Receiver;
+use tokio::time::{sleep_until, Instant};
 
 type NodeId = usize;
 type TermId = u64;
+
+struct Config;
+
+impl Config {
+    const ELECTION_TIMEOUT: Duration = Duration::from_millis(0); // TODO
+}
 
 #[derive(Debug)]
 struct Log<T> {
@@ -39,13 +51,13 @@ impl From<&LogStateMessage> for LogState {
 }
 
 #[derive(Debug, Default)]
-struct PersistentState<A> {
+struct PersistentState {
     current_term: TermId,
     voted_for: Option<NodeId>,
-    log: Vec<Log<A>>,
+    log: Vec<Log<ApplyMsg>>,
 }
 
-impl<A> PersistentState<A> {
+impl PersistentState {
     fn get_log_state(&self) -> Option<LogState> {
         self.log.last().map(|log| LogState {
             term: log.term,
@@ -58,7 +70,6 @@ impl<A> PersistentState<A> {
 struct VolatileServerState {
     commit_index: usize,
     last_applied: usize,
-    role: Role,
 }
 
 #[derive(Debug)]
@@ -69,73 +80,148 @@ struct VolatileLeaderState {
 
 #[derive(Debug)]
 enum Role {
-    Follower,
-    Candidate,
-    Leader { leader_state: VolatileLeaderState },
+    Follower(Follower),
+    Candidate(Candidate),
+    Leader(Leader),
 }
 
-impl Default for Role {
-    fn default() -> Self {
-        Role::Follower
-    }
+#[derive(Debug)]
+struct Leader {
+    state: VolatileLeaderState,
 }
 
 #[derive(Debug, Default)]
-pub struct RaftState<A> {
-    persistent_state: PersistentState<A>,
-    volatile_state: VolatileServerState,
+struct Follower {}
+
+#[derive(Debug)]
+struct Candidate {}
+
+impl Default for Role {
+    fn default() -> Self {
+        Role::Follower(Follower::default())
+    }
 }
 
-impl<A> RaftState<A> {
+#[derive(Debug)]
+pub struct RaftI {
+    role: Role,
+    except_role: ExceptRole,
+}
+
+#[derive(Debug)]
+struct ExceptRole {
+    node_id: NodeId,
+    persistent_state: PersistentState,
+    volatile_state: VolatileServerState,
+    task_receiver: Receiver<Task>,
+}
+
+impl RaftI {
+    fn new(role: Role, except_role: ExceptRole) -> RaftI {
+        RaftI { role, except_role }
+    }
+
+    pub fn init(node_id: NodeId, task_receiver: Receiver<Task>) -> RaftI {
+        RaftI::new(
+            Role::default(),
+            ExceptRole {
+                node_id,
+                persistent_state: PersistentState::default(),
+                volatile_state: VolatileServerState::default(),
+                task_receiver,
+            },
+        )
+    }
+
     pub(crate) fn is_leader(&self) -> bool {
-        matches!(self.volatile_state.role, Role::Leader { .. })
+        matches!(self.role, Role::Leader { .. })
     }
 
     pub(crate) fn get_term(&self) -> TermId {
-        self.persistent_state.current_term
+        self.except_role.persistent_state.current_term
     }
 }
 
-fn request_vote<A>(
-    mut state: RaftState<A>,
-    node_id: NodeId,
-    args: &RequestVoteArgs,
-) -> (RequestVoteReply, RaftState<A>) {
+fn request_vote(state: RaftI, args: &RequestVoteArgs) -> (RequestVoteReply, RaftI) {
+    let RaftI {
+        role,
+        mut except_role,
+    } = state;
     let log_ok = {
-        let self_log_state = state.persistent_state.get_log_state();
+        let self_log_state = except_role.persistent_state.get_log_state();
         let other_log_state: Option<LogState> = args.log_state.as_ref().map(Into::into);
         other_log_state >= self_log_state
     };
     let term_ok = {
-        let current_term = state.persistent_state.current_term;
-        let voted_for = state.persistent_state.voted_for;
+        let current_term = except_role.persistent_state.current_term;
+        let voted_for = except_role.persistent_state.voted_for;
         current_term > args.term
             || (current_term == args.term
                 && (voted_for.is_none() || voted_for == Some(args.candidate_id as usize)))
     };
     if log_ok && term_ok {
-        state.persistent_state.current_term += 1;
-        state.volatile_state.role = Role::Follower;
-        state.persistent_state.voted_for = Some(args.candidate_id as usize);
+        except_role.persistent_state.current_term += 1;
+        let new_role = Role::Follower(Follower::default());
+        except_role.persistent_state.voted_for = Some(args.candidate_id as usize);
         let response = RequestVoteReply {
-            term: state.persistent_state.current_term,
-            node_id: node_id as u32,
+            term: except_role.persistent_state.current_term,
+            node_id: except_role.node_id as u32,
             vote_granted: true,
         };
-        (response, state)
+        (response, RaftI::new(new_role, except_role))
     } else {
         let response = RequestVoteReply {
-            term: state.persistent_state.current_term,
-            node_id: node_id as u32,
+            term: except_role.persistent_state.current_term,
+            node_id: except_role.node_id as u32,
             vote_granted: false,
         };
-        (response, state)
+        (response, RaftI::new(role, except_role))
     }
 }
 
-fn append_entries<A>(
-    _state: RaftState<A>,
-    _args: &AppendEntriesArgs,
-) -> (AppendEntriesReply, RaftState<A>) {
+fn append_entries(_state: RaftI, _args: &AppendEntriesArgs) -> (AppendEntriesReply, RaftI) {
     todo!()
+}
+
+async fn handle_follower(state: Follower, mut except_role: ExceptRole) -> RaftI {
+    // TODO: random timeout, time function as dependency
+    let failure_timer =
+        sleep_until(Instant::now() + Duration::from_millis(thread_rng().gen_range(100, 200)));
+    select! {
+        _ = failure_timer => RaftI::new(Role::Candidate(Candidate {}), except_role),
+        Some(message) = except_role.task_receiver.recv() => match message {
+            Task::RequestVote { args, sender } => {
+                let (reply, new_state) = request_vote(RaftI::new(Role::Follower(state), except_role), &args);
+                sender.send(reply).unwrap();
+                new_state
+            }
+            Task::AppendEntries { args, sender } => {
+                sender.send(todo!()).unwrap();
+                todo!()
+            }
+        }
+    }
+}
+
+async fn handle_candidate(state: Candidate, mut except_role: ExceptRole) -> RaftI {
+    todo!()
+}
+
+async fn handle_leader(state: Leader, mut except_role: ExceptRole) -> RaftI {
+    todo!()
+}
+
+async fn raft_handle(state: RaftI) -> RaftI {
+    let RaftI { role, except_role } = state;
+    match role {
+        Role::Follower(follower) => handle_follower(follower, except_role).await,
+        Role::Candidate(candidate) => handle_candidate(candidate, except_role).await,
+        Role::Leader(leader) => handle_leader(leader, except_role).await,
+    }
+}
+
+async fn raft_main(mut state: RaftI) {
+    loop {
+        state = raft_handle(state).await;
+    }
 }

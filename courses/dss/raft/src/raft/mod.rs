@@ -5,6 +5,7 @@ use futures::channel::mpsc::UnboundedSender;
 use futures::channel::oneshot;
 use futures::TryFutureExt;
 use labrpc::Error::{Other, Recv};
+use tokio::sync::mpsc;
 
 use tokio::sync::mpsc::Sender;
 
@@ -19,11 +20,12 @@ mod tests;
 use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
-use crate::raft::raft_impl::{RaftState, Task};
+use crate::raft::raft_impl::{RaftI, Task};
 
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
 /// server, via the `apply_ch` passed to `Raft::new`.
+#[derive(Debug)]
 pub enum ApplyMsg {
     Command {
         data: Vec<u8>,
@@ -66,10 +68,13 @@ pub struct Raft {
     // Your data here (2A, 2B, 2C).
     // Look at the paper's Figure 2 for a description of what
     // state a Raft server must maintain.
-    raft_state: RaftState<()>,
+    raft_state: RaftI,
+    message_sender: Sender<Task>,
 }
 
 impl Raft {
+    const BUFFER_SIZE: usize = 32; // TODO: put it in the config
+
     /// the service or tester wants to create a Raft server. the ports
     /// of all the Raft servers (including this one) are in peers. this
     /// server's port is peers[me]. all the servers' peers arrays
@@ -87,11 +92,13 @@ impl Raft {
         let raft_state = persister.raft_state();
 
         // Your initialization code here (2A, 2B, 2C).
+        let (message_sender, message_receiver) = mpsc::channel(Self::BUFFER_SIZE);
         let mut rf = Raft {
             peers,
             persister,
             me,
-            raft_state: RaftState::default(),
+            raft_state: RaftI::init(me, message_receiver),
+            message_sender,
         };
 
         // initialize from state persisted before a crash
@@ -216,9 +223,7 @@ impl Raft {
         self.snapshot(0, &[]);
         let _ = self.send_request_vote(0, Default::default());
         self.persist();
-        let _ = &self.me;
         let _ = &self.persister;
-        let _ = &self.peers;
     }
 }
 
@@ -240,17 +245,15 @@ impl Raft {
 pub struct Node {
     // Your code here.
     raft: Arc<Raft>,
-    message_sender: Sender<Task>,
 }
 
 impl Node {
     /// Create a new raft service.
-    pub fn new(_raft: Raft) -> Node {
+    pub fn new(raft: Raft) -> Node {
         // Your code here.
-        // Node {
-        //     raft: raft,
-        // }
-        todo!()
+        Node {
+            raft: Arc::new(raft),
+        }
     }
 
     /// the service using Raft (e.g. a k/v server) wants to start
@@ -340,7 +343,7 @@ impl RaftService for Node {
     // CAVEATS: Please avoid locking or sleeping here, it may jam the network.
     async fn request_vote(&self, args: RequestVoteArgs) -> labrpc::Result<RequestVoteReply> {
         // Your code here (2A, 2B).
-        add_task_to_queue(&self.message_sender, |sender| Task::RequestVote {
+        add_task_to_queue(&self.raft.message_sender, |sender| Task::RequestVote {
             args,
             sender,
         })
@@ -348,7 +351,7 @@ impl RaftService for Node {
     }
 
     async fn append_entries(&self, args: AppendEntriesArgs) -> labrpc::Result<AppendEntriesReply> {
-        add_task_to_queue(&self.message_sender, |sender| Task::AppendEntries {
+        add_task_to_queue(&self.raft.message_sender, |sender| Task::AppendEntries {
             args,
             sender,
         })
