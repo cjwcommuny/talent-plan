@@ -1,6 +1,6 @@
 pub mod raftpb {
     ///   Example RequestVote RPC arguments structure.
-    #[derive(Clone, PartialEq, Eq, prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, prost::Message)]
     pub struct RequestVoteArgs {
         #[prost(message, optional, tag = "1")]
         pub log_state: Option<LogStateMessage>,
@@ -10,7 +10,7 @@ pub mod raftpb {
         pub candidate_id: u32,
     }
 
-    #[derive(Clone, PartialEq, Eq, prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, prost::Message)]
     pub struct LogStateMessage {
         #[prost(uint32, tag = "1")]
         pub last_log_index: u32,

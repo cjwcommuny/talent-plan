@@ -1,12 +1,13 @@
+use futures::stream::FuturesUnordered;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures::TryFutureExt;
-use rand::{Rng, thread_rng};
+use labrpc::Error::{Other, Recv};
+use rand::{thread_rng, Rng};
 use tokio::select;
 use tokio::sync::{mpsc, oneshot};
-use labrpc::Error::{Other, Recv};
-use tokio::time::{Instant, sleep_until};
+use tokio::time::{sleep_until, Instant};
 
 #[cfg(test)]
 pub mod config;
@@ -150,12 +151,18 @@ impl Default for Role {
 struct Handle {
     // RPC end points of all peers
     peers: Vec<RaftClient>,
+
     // Object to hold this peer's persisted state
     persister: Box<dyn Persister>,
+
     // this peer's index into peers[]
     node_id: usize,
+
+    // states
     volatile_state: VolatileServerState,
     persistent_state: PersistentState,
+
+    // async task queue
     task_sender: mpsc::Sender<Task>,
     task_receiver: mpsc::Receiver<Task>,
 }
@@ -197,7 +204,7 @@ impl Raft {
                 persistent_state: PersistentState::default(),
                 task_sender,
                 task_receiver,
-            }
+            },
         };
 
         // initialize from state persisted before a crash
@@ -233,50 +240,6 @@ impl Raft {
         //         panic!("{:?}", e);
         //     }
         // }
-    }
-
-    /// example code to send a RequestVote RPC to a server.
-    /// server is the index of the target server in peers.
-    /// expects RPC arguments in args.
-    ///
-    /// The labrpc package simulates a lossy network, in which servers
-    /// may be unreachable, and in which requests and replies may be lost.
-    /// This method sends a request and waits for a reply. If a reply arrives
-    /// within a timeout interval, This method returns Ok(_); otherwise
-    /// this method returns Err(_). Thus this method may not return for a while.
-    /// An Err(_) return can be caused by a dead server, a live server that
-    /// can't be reached, a lost request, or a lost reply.
-    ///
-    /// This method is guaranteed to return (perhaps after a delay) *except* if
-    /// the handler function on the server side does not return.  Thus there
-    /// is no need to implement your own timeouts around this method.
-    ///
-    /// look at the comments in ../labrpc/src/lib.rs for more details.
-    fn send_request_vote(
-        &self,
-        server: usize,
-        args: RequestVoteArgs,
-    ) -> oneshot::Receiver<Result<RequestVoteReply>> {
-        // Your code here if you want the rpc becomes async.
-        // Example:
-        // ```
-        // let peer = &self.peers[server];
-        // let peer_clone = peer.clone();
-        // let (tx, rx) = channel();
-        // peer.spawn(async move {
-        //     let res = peer_clone.request_vote(&args).await.map_err(Error::Rpc);
-        //     tx.send(res);
-        // });
-        // rx
-        // ```
-        let (tx, rx) = oneshot::channel();
-        let peer = &self.handle.peers[server];
-        let peer_clone = peer.clone();
-        peer.spawn(async move {
-            let result = peer_clone.request_vote(&args).await.map_err(Error::Rpc);
-            let _ = tx.send(result);
-        });
-        rx
     }
 
     fn start<M>(&self, command: &M) -> Result<(u64, u64)>
@@ -320,7 +283,6 @@ impl Raft {
         let _ = self.start(&0);
         let _ = self.cond_install_snapshot(0, 0, &[]);
         self.snapshot(0, &[]);
-        let _ = self.send_request_vote(0, Default::default());
         self.persist();
         let _ = &self.handle.persister;
     }
@@ -450,9 +412,8 @@ impl RaftService for Node {
     }
 
     async fn append_entries(&self, args: AppendEntriesArgs) -> labrpc::Result<AppendEntriesReply> {
-        add_task_to_queue(&self.raft.handle.task_sender, |sender| Task::AppendEntries {
-            args,
-            sender,
+        add_task_to_queue(&self.raft.handle.task_sender, |sender| {
+            Task::AppendEntries { args, sender }
         })
         .await
     }
@@ -474,15 +435,10 @@ where
     receiver.await.map_err(Recv)
 }
 
-
 impl Raft {
-
-
     fn append_entries(&mut self, _args: &AppendEntriesArgs) -> AppendEntriesReply {
         todo!()
     }
-
-
 
     async fn raft_main(mut self) {
         loop {
@@ -501,7 +457,11 @@ impl Raft {
     }
 }
 
-fn request_vote(role: Role, handle: &mut Handle, args: &RequestVoteArgs) -> (RequestVoteReply, Role) {
+fn request_vote(
+    role: Role,
+    handle: &mut Handle,
+    args: &RequestVoteArgs,
+) -> (RequestVoteReply, Role) {
     let log_ok = {
         let self_log_state = handle.persistent_state.get_log_state();
         let other_log_state: Option<LogState> = args.log_state.as_ref().map(Into::into);
@@ -512,7 +472,7 @@ fn request_vote(role: Role, handle: &mut Handle, args: &RequestVoteArgs) -> (Req
         let voted_for = handle.persistent_state.voted_for;
         current_term > args.term
             || (current_term == args.term
-            && (voted_for.is_none() || voted_for == Some(args.candidate_id as usize)))
+                && (voted_for.is_none() || voted_for == Some(args.candidate_id as usize)))
     };
     if log_ok && term_ok {
         handle.persistent_state.current_term += 1;
@@ -540,8 +500,8 @@ async fn handle_follower(role: Follower, handle: &mut Handle) -> Role {
         sleep_until(Instant::now() + Duration::from_millis(thread_rng().gen_range(100, 200)));
     select! {
         _ = failure_timer => {
-                Role::Candidate(Candidate {})
-            }
+            Role::Candidate(Candidate {})
+        }
         Some(message) = handle.task_receiver.recv() => match message {
             Task::RequestVote { args, sender } => {
                 let (reply, role) = request_vote(Role::Follower(role), handle, &args);
@@ -556,9 +516,76 @@ async fn handle_follower(role: Follower, handle: &mut Handle) -> Role {
 }
 
 async fn handle_candidate(role: Candidate, handle: &mut Handle) -> Role {
+    handle.persistent_state.current_term += 1;
+    handle.persistent_state.voted_for = Some(handle.node_id);
+    let log_state = handle
+        .persistent_state
+        .log
+        .last()
+        .map(|log| LogStateMessage {
+            last_log_index: (handle.persistent_state.log.len() - 1) as u32,
+            last_log_term: log.term,
+        });
+    let args = RequestVoteArgs {
+        log_state,
+        term: handle.persistent_state.current_term,
+        candidate_id: handle.node_id as u32,
+    };
+    let futures: FuturesUnordered<_> = handle
+        .peers
+        .iter()
+        .map(|peer| send_request_vote(peer.clone(), args))
+        .collect();
+    for peer in handle.peers.iter() {
+        let reply = send_request_vote(peer.clone(), args);
+    }
+    // TODO: timer parameters as config
+    let election_timer = sleep_until(Instant::now() + Duration::from_millis(200));
     todo!()
 }
 
 async fn handle_leader(role: Leader, handle: &mut Handle) -> Role {
     todo!()
+}
+
+/// example code to send a RequestVote RPC to a server.
+/// server is the index of the target server in peers.
+/// expects RPC arguments in args.
+///
+/// The labrpc package simulates a lossy network, in which servers
+/// may be unreachable, and in which requests and replies may be lost.
+/// This method sends a request and waits for a reply. If a reply arrives
+/// within a timeout interval, This method returns Ok(_); otherwise
+/// this method returns Err(_). Thus this method may not return for a while.
+/// An Err(_) return can be caused by a dead server, a live server that
+/// can't be reached, a lost request, or a lost reply.
+///
+/// This method is guaranteed to return (perhaps after a delay) *except* if
+/// the handler function on the server side does not return.  Thus there
+/// is no need to implement your own timeouts around this method.
+///
+/// look at the comments in ../labrpc/src/lib.rs for more details.
+fn send_request_vote(
+    peer: RaftClient,
+    args: RequestVoteArgs,
+) -> oneshot::Receiver<Result<RequestVoteReply>> {
+    // Your code here if you want the rpc becomes async.
+    // Example:
+    // ```
+    // let peer = &self.peers[server];
+    // let peer_clone = peer.clone();
+    // let (tx, rx) = channel();
+    // peer.spawn(async move {
+    //     let res = peer_clone.request_vote(&args).await.map_err(Error::Rpc);
+    //     tx.send(res);
+    // });
+    // rx
+    // ```
+    let (tx, rx) = oneshot::channel();
+    let peer_clone = peer.clone();
+    peer.spawn(async move {
+        let result = peer_clone.request_vote(&args).await.map_err(Error::Rpc);
+        let _ = tx.send(result);
+    });
+    rx
 }
