@@ -102,7 +102,7 @@ peers don't always fire at the same time, or else all peers will vote only for
 themselves and no one will become the leader. You can generate random numbers
 using the `rand` external crate ([doc][rand]).
 - The tester limits the frequency of RPC calls to 10 times per second for each
-pair of sender and receiver. Please do not just send RPCs repeatedly without wait
+pair of _sender and receiver. Please do not just send RPCs repeatedly without wait
 for a timeout.
 - The tester requires your Raft to elect a new leader within five seconds of the
 failure of the old leader (if a majority of peers can still communicate). However,

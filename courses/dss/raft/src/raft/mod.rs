@@ -1,9 +1,13 @@
-use futures::stream::FuturesUnordered;
+use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
+use std::collections::HashSet;
+use std::future::Future;
+use std::result;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures::TryFutureExt;
 use labrpc::Error::{Other, Recv};
+use num::integer::div_ceil;
 use rand::{thread_rng, Rng};
 use tokio::select;
 use tokio::sync::{mpsc, oneshot};
@@ -124,6 +128,15 @@ struct VolatileLeaderState {
     match_index: Vec<usize>,
 }
 
+impl VolatileLeaderState {
+    fn new(log_length: usize, num_servers: usize) -> Self {
+        VolatileLeaderState {
+            next_index: vec![log_length; num_servers],
+            match_index: vec![0; num_servers],
+        }
+    }
+}
+
 #[derive(Debug)]
 enum Role {
     Follower(Follower),
@@ -134,6 +147,12 @@ enum Role {
 #[derive(Debug)]
 struct Leader {
     state: VolatileLeaderState,
+}
+
+impl Leader {
+    fn new(state: VolatileLeaderState) -> Self {
+        Leader { state }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -502,16 +521,39 @@ async fn handle_follower(role: Follower, handle: &mut Handle) -> Role {
         _ = failure_timer => {
             Role::Candidate(Candidate {})
         }
-        Some(message) = handle.task_receiver.recv() => match message {
-            Task::RequestVote { args, sender } => {
-                let (reply, role) = request_vote(Role::Follower(role), handle, &args);
-                sender.send(reply).unwrap();
-                role
-            }
-            Task::AppendEntries { args, sender } => {
-                sender.send(todo!()).unwrap();
-            }
+        Some(task) = handle.task_receiver.recv() => handle_task(task, Role::Follower(role), handle)
+    }
+}
+
+fn handle_task(task: Task, role: Role, handle: &mut Handle) -> Role {
+    match task {
+        Task::RequestVote { args, sender } => {
+            let (reply, new_role) = request_vote(role, handle, &args);
+            sender.send(reply).unwrap();
+            new_role
         }
+        Task::AppendEntries { args, sender } => {
+            sender.send(todo!()).unwrap();
+        }
+    }
+}
+
+enum ValidatedTask {
+    Illegal, // term less than or equal to the current term
+    Legal { term: TermId, task: Task },
+}
+
+fn validate_task(current_term: TermId) -> impl FnOnce(Task) -> ValidatedTask {
+    move |task| match task {
+        Task::RequestVote { args, sender } if args.term > current_term => ValidatedTask::Legal {
+            term: args.term,
+            task: Task::RequestVote { args, sender },
+        },
+        Task::AppendEntries { args, sender } if args.term > current_term => ValidatedTask::Legal {
+            term: args.term,
+            task: Task::AppendEntries { args, sender },
+        },
+        _ => ValidatedTask::Illegal,
     }
 }
 
@@ -531,17 +573,68 @@ async fn handle_candidate(role: Candidate, handle: &mut Handle) -> Role {
         term: handle.persistent_state.current_term,
         candidate_id: handle.node_id as u32,
     };
-    let futures: FuturesUnordered<_> = handle
+    let replies = handle
         .peers
         .iter()
-        .map(|peer| send_request_vote(peer.clone(), args))
-        .collect();
-    for peer in handle.peers.iter() {
-        let reply = send_request_vote(peer.clone(), args);
-    }
+        .map(|peer| send_request_vote(peer.clone(), args));
     // TODO: timer parameters as config
     let election_timer = sleep_until(Instant::now() + Duration::from_millis(200));
-    todo!()
+    let electoral_threshold = div_ceil(handle.peers.len() + 1, 2);
+    let current_term = handle.persistent_state.current_term;
+    select! {
+        _ = election_timer => {
+            Role::Candidate(role)
+        }
+        Some(ValidatedTask::Legal { term ,task }) = handle.task_receiver.recv().map(|option| option.map(validate_task(current_term))) => {
+            handle.persistent_state.current_term = term;
+            handle.persistent_state.voted_for = None;
+            handle_task(task, Role::Candidate(role), handle)
+        }
+        vote_result = collect_vote(replies, electoral_threshold, handle.persistent_state.current_term) => match vote_result {
+            VoteResult::Elected => {
+                Role::Leader(Leader::new(VolatileLeaderState::new(handle.persistent_state.log.len(), handle.peers.len())))
+            }
+            VoteResult::Unsuccess => {
+                Role::Candidate(role)
+            }
+            VoteResult::FoundLargerTerm(new_term) => {
+                handle.persistent_state.current_term = new_term;
+                handle.persistent_state.voted_for = None;
+                Role::Follower(Follower::default())
+            }
+        }
+
+    }
+}
+
+enum VoteResult {
+    Elected,
+    Unsuccess, // all peers reply but none of the reply is legal
+    FoundLargerTerm(TermId),
+}
+
+async fn collect_vote<F>(
+    replies: impl Iterator<Item = F>,
+    electoral_threshold: usize,
+    current_term: TermId,
+) -> VoteResult
+where
+    F: Future<Output = result::Result<Result<RequestVoteReply>, oneshot::error::RecvError>>,
+{
+    let mut replies: FuturesUnordered<_> = replies.collect();
+    let mut votes_received = HashSet::new();
+    while let Some(reply) = replies.next().await.map(|r| r.unwrap().unwrap()) {
+        // TODO: remove unwrap
+        if reply.term == current_term && reply.vote_granted {
+            votes_received.insert(reply.node_id);
+            if votes_received.len() >= electoral_threshold {
+                return VoteResult::Elected;
+            }
+        } else if reply.term > current_term {
+            return VoteResult::FoundLargerTerm(reply.term);
+        }
+    }
+    return VoteResult::Unsuccess;
 }
 
 async fn handle_leader(role: Leader, handle: &mut Handle) -> Role {
@@ -568,7 +661,7 @@ async fn handle_leader(role: Leader, handle: &mut Handle) -> Role {
 fn send_request_vote(
     peer: RaftClient,
     args: RequestVoteArgs,
-) -> oneshot::Receiver<Result<RequestVoteReply>> {
+) -> impl Future<Output = result::Result<Result<RequestVoteReply>, oneshot::error::RecvError>> {
     // Your code here if you want the rpc becomes async.
     // Example:
     // ```
@@ -588,4 +681,8 @@ fn send_request_vote(
         let _ = tx.send(result);
     });
     rx
+}
+
+async fn replicate_log() {
+    todo!()
 }
