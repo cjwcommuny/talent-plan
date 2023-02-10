@@ -29,7 +29,7 @@ pub mod raftpb {
         pub vote_granted: bool,
     }
 
-    #[derive(Clone, PartialEq, Eq, prost::Message)]
+    #[derive(Clone, Copy, PartialEq, Eq, prost::Message)]
     pub struct AppendEntriesArgs {
         #[prost(uint64, tag = "1")]
         pub term: u64,
