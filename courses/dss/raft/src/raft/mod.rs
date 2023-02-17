@@ -1,35 +1,32 @@
-use futures::channel::oneshot::Canceled;
-use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
-use std::collections::HashSet;
-use std::convert::identity;
-use std::future::Future;
-use std::result;
+use futures::{FutureExt, StreamExt};
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures::TryFutureExt;
 use labrpc::Error::{Other, Recv};
-use labrpc::RpcFuture;
-use num::integer::div_ceil;
-use rand::{thread_rng, Rng};
-use tokio::runtime::Runtime;
-use tokio::select;
-use tokio::sync::{mpsc, oneshot};
-use tokio::task::spawn_blocking;
-use tokio::time::{interval, sleep_until, Instant};
 
+use tokio::runtime::Runtime;
+
+use tokio::sync::mpsc;
+
+use crate::raft::role::Role;
+
+mod candidate;
 #[cfg(test)]
 pub mod config;
 pub mod errors;
+mod leader;
 pub mod persister;
+mod role;
 #[cfg(test)]
 mod tests;
 
 use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
-use crate::raft::errors::Error::{NotLeader, Rpc};
-use crate::raft::Task::AppendEntries;
+use crate::raft::errors::Error::NotLeader;
+use crate::raft::leader::{Log, LogState};
 
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
@@ -75,24 +72,6 @@ impl Config {
     const ELECTION_TIMEOUT: Duration = Duration::from_millis(0); // TODO
 }
 
-#[derive(Debug)]
-struct Log<T> {
-    content: T,
-    term: TermId,
-}
-
-impl<T> Log<T> {
-    fn new(content: T, term: TermId) -> Self {
-        Log { content, term }
-    }
-}
-
-#[derive(Debug, Eq, PartialEq, PartialOrd, Ord)]
-struct LogState {
-    term: TermId,
-    index: usize,
-}
-
 pub enum Task {
     RequestVote {
         args: RequestVoteArgs,
@@ -104,15 +83,6 @@ pub enum Task {
     },
 }
 
-impl From<&LogStateMessage> for LogState {
-    fn from(x: &LogStateMessage) -> Self {
-        LogState {
-            term: x.last_log_term,
-            index: x.last_log_index as usize,
-        }
-    }
-}
-
 #[derive(Debug, Default)]
 struct PersistentState {
     current_term: TermId,
@@ -122,10 +92,9 @@ struct PersistentState {
 
 impl PersistentState {
     fn get_log_state(&self) -> Option<LogState> {
-        self.log.last().map(|log| LogState {
-            term: log.term,
-            index: self.log.len() - 1,
-        })
+        self.log
+            .last()
+            .map(|log| LogState::new(log.term, self.log.len() - 1))
     }
 }
 
@@ -135,52 +104,7 @@ struct VolatileServerState {
     last_applied: usize,
 }
 
-#[derive(Debug)]
-struct VolatileLeaderState {
-    next_index: Vec<usize>,
-    match_index: Vec<usize>,
-}
-
-impl VolatileLeaderState {
-    fn new(log_length: usize, num_servers: usize) -> Self {
-        VolatileLeaderState {
-            next_index: vec![log_length; num_servers],
-            match_index: vec![0; num_servers],
-        }
-    }
-}
-
-#[derive(Debug)]
-enum Role {
-    Follower(Follower),
-    Candidate(Candidate),
-    Leader(Leader),
-}
-
-#[derive(Debug)]
-struct Leader {
-    state: VolatileLeaderState,
-}
-
-impl Leader {
-    fn new(state: VolatileLeaderState) -> Self {
-        Leader { state }
-    }
-}
-
-#[derive(Debug, Default)]
-struct Follower {}
-
-#[derive(Debug)]
-struct Candidate {}
-
-impl Default for Role {
-    fn default() -> Self {
-        Role::Follower(Follower::default())
-    }
-}
-
-struct Handle {
+pub struct Handle {
     // RPC end points of all peers
     peers: Vec<RaftClient>,
 
@@ -469,83 +393,26 @@ impl Raft {
     async fn raft_main(&mut self) {
         loop {
             let role = self.role.take().unwrap();
-            let new_role = Self::handle(role, &mut self.handle).await;
+            let new_role = role.handle(&mut self.handle).await;
             self.role = Some(new_role);
         }
-    }
-
-    async fn handle(role: Role, handle: &mut Handle) -> Role {
-        match role {
-            Role::Follower(follower) => handle_follower(follower, handle).await,
-            Role::Candidate(candidate) => handle_candidate(candidate, handle).await,
-            Role::Leader(leader) => handle_leader(leader, handle).await,
-        }
-    }
-}
-
-fn request_vote(
-    role: Role,
-    handle: &mut Handle,
-    args: &RequestVoteArgs,
-) -> (RequestVoteReply, Role) {
-    let log_ok = {
-        let self_log_state = handle.persistent_state.get_log_state();
-        let other_log_state: Option<LogState> = args.log_state.as_ref().map(Into::into);
-        other_log_state >= self_log_state
-    };
-    let term_ok = {
-        let current_term = handle.persistent_state.current_term;
-        let voted_for = handle.persistent_state.voted_for;
-        current_term > args.term
-            || (current_term == args.term
-                && (voted_for.is_none() || voted_for == Some(args.candidate_id as usize)))
-    };
-    if log_ok && term_ok {
-        handle.persistent_state.current_term += 1;
-        let new_role = Role::Follower(Follower::default());
-        handle.persistent_state.voted_for = Some(args.candidate_id as usize);
-        let response = RequestVoteReply {
-            term: handle.persistent_state.current_term,
-            node_id: handle.node_id as u32,
-            vote_granted: true,
-        };
-        (response, new_role)
-    } else {
-        let response = RequestVoteReply {
-            term: handle.persistent_state.current_term,
-            node_id: handle.node_id as u32,
-            vote_granted: false,
-        };
-        (response, role)
-    }
-}
-
-async fn handle_follower(role: Follower, handle: &mut Handle) -> Role {
-    // TODO: random timeout, time function as dependency
-    let failure_timer =
-        sleep_until(Instant::now() + Duration::from_millis(thread_rng().gen_range(100, 200)));
-    select! {
-        _ = failure_timer => {
-            Role::Candidate(Candidate {})
-        }
-        Some(task) = handle.task_receiver.recv() => handle_task(task, Role::Follower(role), handle)
     }
 }
 
 fn handle_task(task: Task, role: Role, handle: &mut Handle) -> Role {
     match task {
         Task::RequestVote { args, sender } => {
-            let (reply, new_role) = request_vote(role, handle, &args);
+            let (reply, new_role) = role.request_vote(handle, &args);
             sender.send(reply).unwrap();
             new_role
         }
-        Task::AppendEntries { args, sender } => {
+        Task::AppendEntries { args: _, sender } => {
             sender.send(todo!()).unwrap();
         }
     }
 }
 
-enum ValidatedTask {
+pub enum ValidatedTask {
     Illegal, // term less than or equal to the current term
     Legal { term: TermId, task: Task },
 }
@@ -561,240 +428,5 @@ fn validate_task(current_term: TermId) -> impl FnOnce(Task) -> ValidatedTask {
             task: Task::AppendEntries { args, sender },
         },
         _ => ValidatedTask::Illegal,
-    }
-}
-
-async fn handle_candidate(role: Candidate, handle: &mut Handle) -> Role {
-    handle.persistent_state.current_term += 1;
-    handle.persistent_state.voted_for = Some(handle.node_id);
-    let log_state = handle
-        .persistent_state
-        .log
-        .last()
-        .map(|log| LogStateMessage {
-            last_log_index: (handle.persistent_state.log.len() - 1) as u32,
-            last_log_term: log.term,
-        });
-    let args = RequestVoteArgs {
-        log_state,
-        term: handle.persistent_state.current_term,
-        candidate_id: handle.node_id as u32,
-    };
-    let replies = handle
-        .peers
-        .iter()
-        .map(|peer| peer.request_vote(&args).map(|r| r.map_err(Rpc)));
-    // TODO: timer parameters as config
-    let election_timer = sleep_until(Instant::now() + Duration::from_millis(200));
-    let electoral_threshold = div_ceil(handle.peers.len() + 1, 2);
-    let current_term = handle.persistent_state.current_term;
-    select! {
-        _ = election_timer => {
-            Role::Candidate(role)
-        }
-        Some(ValidatedTask::Legal { term ,task }) = handle.task_receiver.recv().map(|option| option.map(validate_task(current_term))) => {
-            handle.persistent_state.current_term = term;
-            handle.persistent_state.voted_for = None;
-            handle_task(task, Role::Candidate(role), handle)
-        }
-        vote_result = collect_vote(replies, electoral_threshold, handle.persistent_state.current_term) => match vote_result {
-            VoteResult::Elected => {
-                Role::Leader(Leader::new(VolatileLeaderState::new(handle.persistent_state.log.len(), handle.peers.len())))
-            }
-            VoteResult::Unsuccess => {
-                Role::Candidate(role)
-            }
-            VoteResult::FoundLargerTerm(new_term) => {
-                handle.persistent_state.current_term = new_term;
-                handle.persistent_state.voted_for = None;
-                Role::Follower(Follower::default())
-            }
-        }
-
-    }
-}
-
-enum VoteResult {
-    Elected,
-    Unsuccess, // all peers reply but none of the reply is legal
-    FoundLargerTerm(TermId),
-}
-
-async fn collect_vote<F>(
-    replies: impl Iterator<Item = F>,
-    electoral_threshold: usize,
-    current_term: TermId,
-) -> VoteResult
-where
-    F: Future<Output = Result<RequestVoteReply>>,
-{
-    let mut replies: FuturesUnordered<_> = replies.collect();
-    let mut votes_received = HashSet::new();
-    while let Some(reply) = replies.next().await.map(|r| r.unwrap()) {
-        // TODO: remove unwrap
-        if reply.term == current_term && reply.vote_granted {
-            votes_received.insert(reply.node_id);
-            if votes_received.len() >= electoral_threshold {
-                return VoteResult::Elected;
-            }
-        } else if reply.term > current_term {
-            return VoteResult::FoundLargerTerm(reply.term);
-        }
-    }
-    return VoteResult::Unsuccess;
-}
-
-async fn handle_leader(mut role: Leader, handle: &mut Handle) -> Role {
-    let mut rpc_replies: FuturesUnordered<_> = replicate_logs_followers(&role, handle).collect();
-    let mut heartbeat_timer = interval(Duration::from_millis(100)); // TODO: move to config
-                                                                    // let entry_stream = &handle.entry_task_receiver;
-                                                                    // let rpc_task_stream = &handle.task_receiver;
-                                                                    // let append_entries_rpc_reply_stream = ;
-                                                                    // TODO: merge heartbeat stream and broadcast request stream
-    loop {
-        let current_term = handle.persistent_state.current_term;
-        select! {
-            _ = heartbeat_timer.tick() => {
-                for future in replicate_logs_followers(&role, handle) {
-                    rpc_replies.push(future);
-                }
-            }
-            Some(result) = rpc_replies.next() => {
-                let reply: AppendEntriesReply = result.unwrap(); // TODO: add logging
-                match on_receive_append_entries_reply(reply) {
-                    AppendEntriesResult::Commit => {
-                        commit_log_entries()
-                    }
-                    AppendEntriesResult::Retry(node_id) => {
-                        role.state.next_index[node_id] -= 1; // TODO: independent retry strategy
-                        let future = replicate_log(&role, handle, node_id);
-                        rpc_replies.push(future);
-                    }
-                    AppendEntriesResult::FoundLargerTerm(new_term) => {
-                        handle.persistent_state.current_term = new_term;
-                        return Role::Follower(Follower::default());
-                    }
-                }
-            }
-            Some((data, sender)) = handle.entry_task_receiver.recv() => {
-                let index = handle.persistent_state.log.len() as u64;
-                let current_term = handle.persistent_state.current_term;
-                sender.send((index, current_term)).unwrap();
-                handle.persistent_state.log.push(Log::new(ApplyMsg::Command { data, index }, current_term));
-                for future in replicate_logs_followers(&role, handle) {
-                    rpc_replies.push(future);
-                }
-            }
-            Some(ValidatedTask::Legal { term ,task }) = handle.task_receiver.recv().map(|option| option.map(validate_task(current_term))) => {
-                handle.persistent_state.current_term = term;
-                handle.persistent_state.voted_for = None;
-                let new_role = handle_task(task, Role::Leader(role), handle);
-                if let Role::Leader(new_role) = new_role {
-                    role = new_role;
-                } else {
-                    return new_role;
-                }
-            }
-            else => { // no more replies
-                todo!()
-            }
-        }
-    }
-    todo!()
-}
-
-fn commit_log_entries() {
-    todo!()
-}
-
-enum AppendEntriesResult {
-    FoundLargerTerm(TermId),
-    Commit,
-    Retry(NodeId),
-}
-
-fn on_receive_append_entries_reply(reply: AppendEntriesReply) -> AppendEntriesResult {
-    todo!()
-}
-
-/// example code to send a RequestVote RPC to a server.
-/// server is the index of the target server in peers.
-/// expects RPC arguments in args.
-///
-/// The labrpc package simulates a lossy network, in which servers
-/// may be unreachable, and in which requests and replies may be lost.
-/// This method sends a request and waits for a reply. If a reply arrives
-/// within a timeout interval, This method returns `Ok(_)`; otherwise
-/// this method returns `Err(_)`. Thus this method may not return for a while.
-/// An `Err(_)` return can be caused by a dead server, a live server that
-/// can't be reached, a lost request, or a lost reply.
-///
-/// This method is guaranteed to return (perhaps after a delay) *except* if
-/// the handler function on the server side does not return.  Thus there
-/// is no need to implement your own timeouts around this method.
-///
-/// look at the comments in ../labrpc/src/lib.rs for more details.
-fn send_rpc_task<A, R, Call, F>(
-    peer: RaftClient,
-    args: A,
-    rpc_call: Call,
-) -> oneshot::Receiver<Result<R>>
-where
-    Call: FnOnce(&RaftClient, &A) -> F + Send + 'static,
-    F: Future<Output = labrpc::Result<R>> + Send,
-    A: Send + Sync + 'static,
-    R: Send + 'static,
-{
-    let (tx, rx) = oneshot::channel();
-    let peer_clone = peer.clone();
-    peer.spawn(async move {
-        let result = rpc_call(&peer_clone, &args).await.map_err(Error::Rpc);
-        let _ = tx.send(result);
-    });
-    rx
-}
-
-fn replicate_log(
-    leader: &Leader,
-    handle: &Handle,
-    node_id: NodeId,
-) -> RpcFuture<result::Result<AppendEntriesReply, labrpc::Error>> {
-    let prev_log_index = leader.state.next_index[node_id];
-    let prev_log_term = if prev_log_index > 0 {
-        handle.persistent_state.log[prev_log_index - 1].term
-    } else {
-        0
-    };
-    let args = AppendEntriesArgs {
-        term: handle.persistent_state.current_term,
-        leader_id: handle.node_id as u64,
-        prev_log_index: prev_log_index as u32,
-        prev_log_term,
-    };
-    let peer = handle.peers[node_id].clone();
-    peer.append_entries(&args)
-}
-
-fn replicate_logs_followers<'a>(
-    leader: &'a Leader,
-    handle: &'a Handle,
-) -> impl Iterator<Item = RpcFuture<result::Result<AppendEntriesReply, labrpc::Error>>> + 'a {
-    (0..handle.peers.len())
-        .filter(move |node_id| *node_id != handle.node_id)
-        .map(move |node_id| {
-            replicate_log(leader, handle, node_id)
-        })
-}
-
-impl Leader {
-    async fn add_entry<M>(&self, handle: &Handle, command: &M) -> Result<(u64, u64)>
-    where
-        M: labcodec::Message,
-    {
-        let mut buffer = Vec::new();
-        command.encode(&mut buffer).map_err(|e| Error::Encode(e))?;
-        add_message_to_queue(&handle.entry_task_sender, |sender| (buffer, sender))
-            .await
-            .map_err(Error::Rpc)
     }
 }
