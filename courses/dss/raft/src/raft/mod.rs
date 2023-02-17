@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use futures::TryFutureExt;
 use labrpc::Error::{Other, Recv};
+use labrpc::RpcFuture;
 use num::integer::div_ceil;
 use rand::{thread_rng, Rng};
 use tokio::runtime::Runtime;
@@ -27,7 +28,7 @@ mod tests;
 use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
-use crate::raft::errors::Error::NotLeader;
+use crate::raft::errors::Error::{NotLeader, Rpc};
 use crate::raft::Task::AppendEntries;
 
 /// As each Raft peer becomes aware that successive log entries are committed,
@@ -241,7 +242,7 @@ impl Raft {
                 task_sender,
                 task_receiver,
                 entry_task_sender,
-                entry_task_receiver
+                entry_task_receiver,
             },
         };
 
@@ -356,7 +357,8 @@ impl Node {
         M: labcodec::Message,
     {
         if let Some(Role::Leader(leader)) = &self.raft.role {
-            self.runtime.block_on(leader.add_entry(&self.raft.handle, command))
+            self.runtime
+                .block_on(leader.add_entry(&self.raft.handle, command))
             // TODO: is block_on corret?
             // TODO: is `(u64, u64)` returned by Raft or returned directly
         } else {
@@ -578,13 +580,10 @@ async fn handle_candidate(role: Candidate, handle: &mut Handle) -> Role {
         term: handle.persistent_state.current_term,
         candidate_id: handle.node_id as u32,
     };
-    let replies = handle.peers.iter().map(|peer| {
-        send_task(peer.clone(), args, RaftClient::request_vote).map(|result| {
-            result
-                .map_err(|_| Error::Rpc(Recv(Canceled)))
-                .and_then(identity)
-        })
-    });
+    let replies = handle
+        .peers
+        .iter()
+        .map(|peer| peer.request_vote(&args).map(|r| r.map_err(Rpc)));
     // TODO: timer parameters as config
     let election_timer = sleep_until(Instant::now() + Duration::from_millis(200));
     let electoral_threshold = div_ceil(handle.peers.len() + 1, 2);
@@ -648,10 +647,10 @@ where
 async fn handle_leader(mut role: Leader, handle: &mut Handle) -> Role {
     let mut rpc_replies: FuturesUnordered<_> = replicate_logs_followers(&role, handle).collect();
     let mut heartbeat_timer = interval(Duration::from_millis(100)); // TODO: move to config
-    // let entry_stream = &handle.entry_task_receiver;
-    // let rpc_task_stream = &handle.task_receiver;
-    // let append_entries_rpc_reply_stream = ;
-    // TODO: merge heartbeat stream and broadcast request stream
+                                                                    // let entry_stream = &handle.entry_task_receiver;
+                                                                    // let rpc_task_stream = &handle.task_receiver;
+                                                                    // let append_entries_rpc_reply_stream = ;
+                                                                    // TODO: merge heartbeat stream and broadcast request stream
     loop {
         let current_term = handle.persistent_state.current_term;
         select! {
@@ -661,7 +660,7 @@ async fn handle_leader(mut role: Leader, handle: &mut Handle) -> Role {
                 }
             }
             Some(result) = rpc_replies.next() => {
-                let reply: AppendEntriesReply = result.unwrap().unwrap(); // TODO: add logging
+                let reply: AppendEntriesReply = result.unwrap(); // TODO: add logging
                 match on_receive_append_entries_reply(reply) {
                     AppendEntriesResult::Commit => {
                         commit_log_entries()
@@ -725,9 +724,9 @@ fn on_receive_append_entries_reply(reply: AppendEntriesReply) -> AppendEntriesRe
 /// The labrpc package simulates a lossy network, in which servers
 /// may be unreachable, and in which requests and replies may be lost.
 /// This method sends a request and waits for a reply. If a reply arrives
-/// within a timeout interval, This method returns Ok(_); otherwise
-/// this method returns Err(_). Thus this method may not return for a while.
-/// An Err(_) return can be caused by a dead server, a live server that
+/// within a timeout interval, This method returns `Ok(_)`; otherwise
+/// this method returns `Err(_)`. Thus this method may not return for a while.
+/// An `Err(_)` return can be caused by a dead server, a live server that
 /// can't be reached, a lost request, or a lost reply.
 ///
 /// This method is guaranteed to return (perhaps after a delay) *except* if
@@ -735,7 +734,7 @@ fn on_receive_append_entries_reply(reply: AppendEntriesReply) -> AppendEntriesRe
 /// is no need to implement your own timeouts around this method.
 ///
 /// look at the comments in ../labrpc/src/lib.rs for more details.
-fn send_task<A, R, Call, F>(
+fn send_rpc_task<A, R, Call, F>(
     peer: RaftClient,
     args: A,
     rpc_call: Call,
@@ -759,7 +758,7 @@ fn replicate_log(
     leader: &Leader,
     handle: &Handle,
     node_id: NodeId,
-) -> oneshot::Receiver<Result<AppendEntriesReply>> {
+) -> RpcFuture<result::Result<AppendEntriesReply, labrpc::Error>> {
     let prev_log_index = leader.state.next_index[node_id];
     let prev_log_term = if prev_log_index > 0 {
         handle.persistent_state.log[prev_log_index - 1].term
@@ -773,16 +772,18 @@ fn replicate_log(
         prev_log_term,
     };
     let peer = handle.peers[node_id].clone();
-    send_task(peer, args, RaftClient::append_entries)
+    peer.append_entries(&args)
 }
 
 fn replicate_logs_followers<'a>(
     leader: &'a Leader,
     handle: &'a Handle,
-) -> impl Iterator<Item = oneshot::Receiver<Result<AppendEntriesReply>>> + 'a {
+) -> impl Iterator<Item = RpcFuture<result::Result<AppendEntriesReply, labrpc::Error>>> + 'a {
     (0..handle.peers.len())
         .filter(move |node_id| *node_id != handle.node_id)
-        .map(move |node_id| replicate_log(leader, handle, node_id))
+        .map(move |node_id| {
+            replicate_log(leader, handle, node_id)
+        })
 }
 
 impl Leader {
