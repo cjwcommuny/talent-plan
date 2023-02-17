@@ -26,12 +26,12 @@ use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
 use crate::raft::errors::Error::NotLeader;
-use crate::raft::leader::{Log, LogState};
+use crate::raft::leader::{LogEntry, LogState};
 
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
 /// server, via the `apply_ch` passed to `Raft::new`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ApplyMsg {
     Command {
         data: Vec<u8>,
@@ -96,14 +96,14 @@ impl Task {
 struct PersistentState {
     current_term: TermId,
     voted_for: Option<NodeId>,
-    log: Vec<Log<ApplyMsg>>,
+    log: Vec<LogEntry>,
 }
 
 impl PersistentState {
     fn get_log_state(&self) -> Option<LogState> {
         self.log
             .last()
-            .map(|log| LogState::new(log.term, self.log.len() - 1))
+            .map(|log| LogState::new(log.log_state.term, self.log.len() - 1))
     }
 }
 
@@ -119,6 +119,9 @@ pub struct Handle {
 
     // Object to hold this peer's persisted state
     persister: Box<dyn Persister>,
+
+    // application
+    apply_ch: futures::channel::mpsc::UnboundedSender<ApplyMsg>,
 
     // this peer's index into peers[]
     node_id: usize,
@@ -170,6 +173,7 @@ impl Raft {
                 peers,
                 persister,
                 node_id,
+                apply_ch,
                 volatile_state: VolatileServerState::default(),
                 persistent_state: PersistentState::default(),
                 task_sender,
@@ -181,8 +185,7 @@ impl Raft {
 
         // initialize from state persisted before a crash
         rf.restore(&raft_state);
-
-        crate::your_code_here((rf, apply_ch)) // TODO
+        rf
     }
 
     /// save Raft's persistent state to stable storage,
@@ -426,7 +429,7 @@ impl LegalTask {
         }
     }
 
-    pub fn handle(self, role: Role, handle: &mut Handle) -> Role {
+    pub async fn handle(self, role: Role, handle: &mut Handle) -> Role {
         match self.0 {
             Task::RequestVote { args, sender } => {
                 let (reply, new_role) = role.request_vote(handle, &args);
@@ -434,7 +437,7 @@ impl LegalTask {
                 new_role
             }
             Task::AppendEntries { args, sender } => {
-                let (reply, new_role) = role.append_entries(handle, &args);
+                let (reply, new_role) = role.append_entries(handle, args).await;
                 sender.send(reply).unwrap();
                 new_role
             }

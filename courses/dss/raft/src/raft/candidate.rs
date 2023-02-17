@@ -1,4 +1,4 @@
-use crate::proto::raftpb::{LogStateMessage, RequestVoteArgs, RequestVoteReply};
+use crate::proto::raftpb::{LogStateProst, RequestVoteArgs, RequestVoteReply};
 use crate::raft::errors::{Error, Result};
 use crate::raft::leader::{Leader, VolatileLeaderState};
 use crate::raft::role::{Follower, Role};
@@ -19,14 +19,10 @@ impl Candidate {
         let me = handle.node_id;
         handle.persistent_state.current_term += 1;
         handle.persistent_state.voted_for = Some(me);
-        let log_state = handle
-            .persistent_state
-            .log
-            .last()
-            .map(|log| LogStateMessage {
-                last_log_index: (handle.persistent_state.log.len() - 1) as u32,
-                last_log_term: log.term,
-            });
+        let log_state = handle.persistent_state.log.last().map(|log| LogStateProst {
+            last_log_index: (handle.persistent_state.log.len() - 1) as u32,
+            last_log_term: log.log_state.term,
+        });
         let args = RequestVoteArgs {
             log_state,
             term: handle.persistent_state.current_term,
@@ -51,7 +47,7 @@ impl Candidate {
             Some(task) = receive_task(&mut handle.task_receiver, current_term) => {
                 handle.persistent_state.current_term = task.get_term();
                 handle.persistent_state.voted_for = None;
-                task.handle(Role::Candidate(self), handle)
+                task.handle(Role::Candidate(self), handle).await
             }
             vote_result = collect_vote(replies, electoral_threshold, handle.persistent_state.current_term) => match vote_result {
                 VoteResult::Elected => {

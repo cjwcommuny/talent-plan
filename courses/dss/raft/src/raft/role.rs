@@ -11,7 +11,7 @@ use futures::FutureExt;
 use crate::raft::{receive_task, Handle};
 
 use crate::raft::candidate::Candidate;
-use crate::raft::leader::{Leader, LogState};
+use crate::raft::leader::{append_entries_in_powerpoint, Leader, LogEntry, LogState};
 
 #[derive(Debug)]
 pub enum Role {
@@ -36,7 +36,7 @@ impl Role {
     ) -> (RequestVoteReply, Role) {
         let log_ok = {
             let self_log_state = handle.persistent_state.get_log_state();
-            let other_log_state: Option<LogState> = args.log_state.as_ref().map(Into::into);
+            let other_log_state: Option<LogState> = args.log_state.map(Into::into);
             other_log_state >= self_log_state
         };
         let term_ok = {
@@ -66,12 +66,46 @@ impl Role {
         }
     }
 
-    pub fn append_entries(
+    pub async fn append_entries(
         self,
-        _handle: &mut Handle,
-        _args: &AppendEntriesArgs,
+        handle: &mut Handle,
+        args: AppendEntriesArgs,
     ) -> (AppendEntriesReply, Role) {
-        todo!()
+        if args.term < handle.persistent_state.current_term {
+            handle.persistent_state.voted_for = None;
+            let reply = AppendEntriesReply {
+                term: handle.persistent_state.current_term,
+                success: false,
+            };
+            (reply, self)
+        } else {
+            let new_role = if matches!(self, Role::Follower { .. }) {
+                Role::Follower(Follower::default())
+            } else {
+                self
+            };
+            let remote_log_state = args.log_state.map(Into::<LogState>::into);
+            let local_log_state = remote_log_state
+                .map(|remote_state| handle.persistent_state.log[remote_state.index].log_state);
+            let log_ok = remote_log_state == local_log_state;
+            if log_ok {
+                let log_begin = remote_log_state.map_or(0, |state| state.index + 1);
+                let entries: Vec<LogEntry> = args.entries.into_iter().map(Into::into).collect();
+                append_entries_in_powerpoint(
+                    handle,
+                    log_begin,
+                    entries,
+                    args.leader_commit_index as usize,
+                )
+                .await;
+            }
+            handle.persistent_state.current_term = args.term;
+            let reply = AppendEntriesReply {
+                term: handle.persistent_state.current_term,
+                success: log_ok,
+            };
+            (reply, new_role)
+        }
     }
 }
 
@@ -87,7 +121,7 @@ impl Follower {
             _ = failure_timer => {
                 Role::Candidate(Candidate {})
             }
-            Some(task) = receive_task(&mut handle.task_receiver, handle.persistent_state.current_term) => task.handle(Role::Follower(self), handle)
+            Some(task) = receive_task(&mut handle.task_receiver, handle.persistent_state.current_term) => task.handle(Role::Follower(self), handle).await
         }
     }
 }
