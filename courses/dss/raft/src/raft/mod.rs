@@ -1,4 +1,4 @@
-use futures::{FutureExt, StreamExt};
+use futures::FutureExt;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -81,6 +81,15 @@ pub enum Task {
         args: AppendEntriesArgs,
         sender: futures::channel::oneshot::Sender<AppendEntriesReply>,
     },
+}
+
+impl Task {
+    pub fn get_term(&self) -> TermId {
+        match self {
+            Task::RequestVote { args, sender: _ } => args.term,
+            Task::AppendEntries { args, sender: _ } => args.term,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -393,40 +402,52 @@ impl Raft {
     async fn raft_main(&mut self) {
         loop {
             let role = self.role.take().unwrap();
-            let new_role = role.handle(&mut self.handle).await;
+            let new_role = role.transit(&mut self.handle).await;
             self.role = Some(new_role);
         }
     }
 }
 
-fn handle_task(task: Task, role: Role, handle: &mut Handle) -> Role {
-    match task {
-        Task::RequestVote { args, sender } => {
-            let (reply, new_role) = role.request_vote(handle, &args);
-            sender.send(reply).unwrap();
-            new_role
+///a task is legal iff the term is larger than the current term
+pub struct LegalTask(Task);
+
+impl LegalTask {
+    pub fn get_term(&self) -> TermId {
+        self.0.get_term()
+    }
+
+    pub fn validate(current_term: TermId) -> impl FnOnce(Task) -> Option<LegalTask> {
+        move |task| {
+            if task.get_term() > current_term {
+                Some(LegalTask(task))
+            } else {
+                None
+            }
         }
-        Task::AppendEntries { args: _, sender } => {
-            sender.send(todo!()).unwrap();
+    }
+
+    pub fn handle(self, role: Role, handle: &mut Handle) -> Role {
+        match self.0 {
+            Task::RequestVote { args, sender } => {
+                let (reply, new_role) = role.request_vote(handle, &args);
+                sender.send(reply).unwrap();
+                new_role
+            }
+            Task::AppendEntries { args, sender } => {
+                let (reply, new_role) = role.append_entries(handle, &args);
+                sender.send(reply).unwrap();
+                new_role
+            }
         }
     }
 }
 
-pub enum ValidatedTask {
-    Illegal, // term less than or equal to the current term
-    Legal { term: TermId, task: Task },
-}
-
-fn validate_task(current_term: TermId) -> impl FnOnce(Task) -> ValidatedTask {
-    move |task| match task {
-        Task::RequestVote { args, sender } if args.term > current_term => ValidatedTask::Legal {
-            term: args.term,
-            task: Task::RequestVote { args, sender },
-        },
-        Task::AppendEntries { args, sender } if args.term > current_term => ValidatedTask::Legal {
-            term: args.term,
-            task: Task::AppendEntries { args, sender },
-        },
-        _ => ValidatedTask::Illegal,
-    }
+pub async fn receive_task(
+    receiver: &mut mpsc::Receiver<Task>,
+    current_term: TermId,
+) -> Option<LegalTask> {
+    receiver
+        .recv()
+        .map(|option| option.and_then(LegalTask::validate(current_term)))
+        .await
 }

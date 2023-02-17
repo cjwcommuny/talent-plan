@@ -2,7 +2,7 @@ use crate::proto::raftpb::{LogStateMessage, RequestVoteArgs, RequestVoteReply};
 use crate::raft::errors::{Error, Result};
 use crate::raft::leader::{Leader, VolatileLeaderState};
 use crate::raft::role::{Follower, Role};
-use crate::raft::{handle_task, validate_task, Handle, TermId, ValidatedTask};
+use crate::raft::{receive_task, Handle, TermId};
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use num::integer::div_ceil;
 use std::collections::HashSet;
@@ -15,9 +15,10 @@ use tokio::time::{sleep_until, Instant};
 pub struct Candidate {}
 
 impl Candidate {
-    pub(crate) async fn handle(self, handle: &mut Handle) -> Role {
+    pub(crate) async fn transit(self, handle: &mut Handle) -> Role {
+        let me = handle.node_id;
         handle.persistent_state.current_term += 1;
-        handle.persistent_state.voted_for = Some(handle.node_id);
+        handle.persistent_state.voted_for = Some(me);
         let log_state = handle
             .persistent_state
             .log
@@ -29,12 +30,16 @@ impl Candidate {
         let args = RequestVoteArgs {
             log_state,
             term: handle.persistent_state.current_term,
-            candidate_id: handle.node_id as u32,
+            candidate_id: me as u32,
         };
-        let replies = handle
-            .peers
-            .iter()
-            .map(|peer| peer.request_vote(&args).map(|r| r.map_err(Error::Rpc)));
+        let peers = &handle.peers;
+        let replies = (0..handle.peers.len())
+            .filter(|node_id| *node_id != me)
+            .map(|node_id| {
+                peers[node_id]
+                    .request_vote(&args)
+                    .map(|r| r.map_err(Error::Rpc))
+            });
         // TODO: timer parameters as config
         let election_timer = sleep_until(Instant::now() + Duration::from_millis(200));
         let electoral_threshold = div_ceil(handle.peers.len() + 1, 2);
@@ -43,10 +48,10 @@ impl Candidate {
             _ = election_timer => {
                 Role::Candidate(self)
             }
-            Some(ValidatedTask::Legal { term ,task }) = handle.task_receiver.recv().map(|option| option.map(validate_task(current_term))) => {
-                handle.persistent_state.current_term = term;
+            Some(task) = receive_task(&mut handle.task_receiver, current_term) => {
+                handle.persistent_state.current_term = task.get_term();
                 handle.persistent_state.voted_for = None;
-                handle_task(task, Role::Candidate(self), handle)
+                task.handle(Role::Candidate(self), handle)
             }
             vote_result = collect_vote(replies, electoral_threshold, handle.persistent_state.current_term) => match vote_result {
                 VoteResult::Elected => {

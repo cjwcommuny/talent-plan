@@ -6,10 +6,7 @@ use crate::proto::raftpb::LogStateMessage;
 use crate::proto::raftpb::{AppendEntriesArgs, AppendEntriesReply};
 use crate::raft::errors::{Error, Result};
 use crate::raft::role::{Follower, Role};
-use crate::raft::{
-    add_message_to_queue, handle_task, validate_task, ApplyMsg, Handle, NodeId, TermId,
-    ValidatedTask,
-};
+use crate::raft::{add_message_to_queue, receive_task, ApplyMsg, Handle, NodeId, TermId};
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use tokio::select;
 use tokio::time::interval;
@@ -50,14 +47,11 @@ impl Leader {
             .map_err(Error::Rpc)
     }
 
-    pub(crate) async fn handle(mut self, handle: &mut Handle) -> Role {
+    pub(crate) async fn transit(mut self, handle: &mut Handle) -> Role {
         let mut rpc_replies: FuturesUnordered<_> =
             replicate_logs_followers(&self, handle).collect();
-        let mut heartbeat_timer = interval(Duration::from_millis(100)); // TODO: move to config
-                                                                        // let entry_stream = &handle.entry_task_receiver;
-                                                                        // let rpc_task_stream = &handle.task_receiver;
-                                                                        // let append_entries_rpc_reply_stream = ;
-                                                                        // TODO: merge heartbeat stream and broadcast request stream
+        let mut heartbeat_timer = interval(Duration::from_millis(100));
+        // TODO: move to config
         loop {
             let current_term = handle.persistent_state.current_term;
             select! {
@@ -92,10 +86,10 @@ impl Leader {
                         rpc_replies.push(future);
                     }
                 }
-                Some(ValidatedTask::Legal { term ,task }) = handle.task_receiver.recv().map(|option| option.map(validate_task(current_term))) => {
-                    handle.persistent_state.current_term = term;
+                Some(task) = receive_task(&mut handle.task_receiver, current_term) => {
+                    handle.persistent_state.current_term = task.get_term();
                     handle.persistent_state.voted_for = None;
-                    let new_role = handle_task(task, Role::Leader(self), handle);
+                    let new_role = task.handle(Role::Leader(self), handle);
                     if let Role::Leader(new_role) = new_role {
                         self = new_role;
                     } else {
@@ -107,7 +101,6 @@ impl Leader {
                 }
             }
         }
-        todo!()
     }
 }
 
@@ -175,10 +168,7 @@ impl LogState {
 
 impl From<&LogStateMessage> for LogState {
     fn from(x: &LogStateMessage) -> Self {
-        LogState {
-            term: x.last_log_term,
-            index: x.last_log_index as usize,
-        }
+        LogState::new(x.last_log_term, x.last_log_index as usize)
     }
 }
 

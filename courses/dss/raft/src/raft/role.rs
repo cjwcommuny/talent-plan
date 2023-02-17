@@ -3,10 +3,12 @@ use std::time::Duration;
 use tokio::select;
 use tokio::time::{sleep_until, Instant};
 
-use crate::proto::raftpb::{RequestVoteArgs, RequestVoteReply};
+use crate::proto::raftpb::{
+    AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply,
+};
 use futures::FutureExt;
 
-use crate::raft::{handle_task, Handle};
+use crate::raft::{receive_task, Handle};
 
 use crate::raft::candidate::Candidate;
 use crate::raft::leader::{Leader, LogState};
@@ -19,11 +21,11 @@ pub enum Role {
 }
 
 impl Role {
-    pub(crate) async fn handle(self, handle: &mut Handle) -> Role {
+    pub(crate) async fn transit(self, handle: &mut Handle) -> Role {
         match self {
-            Role::Follower(follower) => follower.handle(handle).await,
-            Role::Candidate(candidate) => candidate.handle(handle).await,
-            Role::Leader(leader) => leader.handle(handle).await,
+            Role::Follower(follower) => follower.transit(handle).await,
+            Role::Candidate(candidate) => candidate.transit(handle).await,
+            Role::Leader(leader) => leader.transit(handle).await,
         }
     }
 
@@ -63,13 +65,21 @@ impl Role {
             (response, self)
         }
     }
+
+    pub fn append_entries(
+        self,
+        _handle: &mut Handle,
+        _args: &AppendEntriesArgs,
+    ) -> (AppendEntriesReply, Role) {
+        todo!()
+    }
 }
 
 #[derive(Debug, Default)]
 pub struct Follower {}
 
 impl Follower {
-    pub async fn handle(self, handle: &mut Handle) -> Role {
+    pub async fn transit(self, handle: &mut Handle) -> Role {
         // TODO: random timeout, time function as dependency
         let failure_timer =
             sleep_until(Instant::now() + Duration::from_millis(thread_rng().gen_range(100, 200)));
@@ -77,7 +87,7 @@ impl Follower {
             _ = failure_timer => {
                 Role::Candidate(Candidate {})
             }
-            Some(task) = handle.task_receiver.recv() => handle_task(task, Role::Follower(self), handle)
+            Some(task) = receive_task(&mut handle.task_receiver, handle.persistent_state.current_term) => task.handle(Role::Follower(self), handle)
         }
     }
 }
