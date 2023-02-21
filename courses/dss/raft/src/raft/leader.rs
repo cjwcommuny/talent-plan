@@ -1,17 +1,17 @@
-use std::cmp::{max, min};
+use crate::proto::raftpb::{AppendEntriesArgs, AppendEntriesReply, RaftClient};
+use crate::proto::raftpb::{LogEntryProst, LogStateProst};
+use crate::raft::inner::{Handle, LocalTask};
+use crate::raft::leader::AppendEntriesResult::FoundLargerTerm;
+use crate::raft::role::{Follower, Role};
+use crate::raft::{receive_task, ApplyMsg, NodeId, TermId};
+use futures::{stream::FuturesUnordered, FutureExt, SinkExt, StreamExt};
 use std::future::Future;
 use std::result;
 use std::time::Duration;
-
-use crate::proto::raftpb::{AppendEntriesArgs, AppendEntriesReply};
-use crate::proto::raftpb::{LogEntryProst, LogStateProst};
-use crate::raft::errors::{Error, Result};
-use crate::raft::role::{Follower, Role};
-use crate::raft::{add_message_to_queue, receive_task, ApplyMsg, Handle, NodeId, TermId};
-use futures::{stream::FuturesUnordered, FutureExt, SinkExt, StreamExt};
 use tokio::select;
 use tokio::time::interval;
 
+/// inner structure for `ApplyMsg`
 #[derive(Debug, Clone)]
 pub enum LogKind {
     Command,
@@ -43,59 +43,52 @@ impl Leader {
         Leader { state }
     }
 
-    pub(crate) async fn add_entry<M>(&self, handle: &Handle, command: &M) -> Result<(u64, u64)>
-    where
-        M: labcodec::Message,
-    {
-        let mut buffer = Vec::new();
-        command.encode(&mut buffer).map_err(|e| Error::Encode(e))?;
-        add_message_to_queue(&handle.entry_task_sender, |sender| (buffer, sender))
-            .await
-            .map_err(Error::Rpc)
-    }
-
     pub(crate) async fn transit(mut self, handle: &mut Handle) -> Role {
-        let mut rpc_replies: FuturesUnordered<_> =
-            replicate_logs_followers(&self, handle).collect();
+        let mut rpc_replies: FuturesUnordered<_> = handle
+            .get_node_ids_except_mine()
+            .map(replicate_log(&self, handle))
+            .collect();
         let mut heartbeat_timer = interval(Duration::from_millis(100));
         // TODO: move to config
         loop {
-            let current_term = handle.persistent_state.current_term;
+            let current_term = handle.election.get_current_term();
             select! {
                 _ = heartbeat_timer.tick() => {
-                    for future in replicate_logs_followers(&self, handle) {
-                        rpc_replies.push(future);
-                    }
+                    rpc_replies.extend(handle.get_node_ids_except_mine().map(check_heartbeat(&self, handle)))
                 }
                 Some(result) = rpc_replies.next() => {
                     let reply: AppendEntriesReply = result.unwrap(); // TODO: add logging
-                    match on_receive_append_entries_reply(reply) {
+                    match on_receive_append_entries_reply(reply, current_term) {
                         AppendEntriesResult::Commit => {
                             commit_log_entries()
                         }
                         AppendEntriesResult::Retry(node_id) => {
                             self.state.next_index[node_id] -= 1; // TODO: independent retry strategy
-                            let future = replicate_log(&self, handle, node_id);
+                            let future = replicate_log(&self, handle)(node_id);
                             rpc_replies.push(future);
                         }
                         AppendEntriesResult::FoundLargerTerm(new_term) => {
-                            handle.persistent_state.current_term = new_term;
+                            handle.election.update_current_term(new_term);
                             return Role::Follower(Follower::default());
                         }
                     }
                 }
-                Some((data, sender)) = handle.entry_task_receiver.recv() => {
-                    let index = handle.persistent_state.log.len();
-                    let current_term = handle.persistent_state.current_term;
-                    sender.send((index as u64, current_term)).unwrap();
-                    handle.persistent_state.log.push(LogEntry::new(LogKind::Command, data, index, current_term));
-                    for future in replicate_logs_followers(&self, handle) {
-                        rpc_replies.push(future);
+                Some(task) = handle.local_task_receiver.recv() => {
+                    match task {
+                        LocalTask::AppendEntries { data, sender } => {
+                            let current_term = handle.election.get_current_term();
+                            let index = handle.logs.add_log(LogKind::Command, data, current_term);
+                            self.state.match_index[handle.node_id] = index + 1;
+                            sender.send(Some((index as u64, current_term))).unwrap();
+                            rpc_replies.extend(handle.get_node_ids_except_mine().map(replicate_log(&self, handle)));
+                        }
+                        LocalTask::GetTerm(sender) => sender.send(handle.election.get_current_term()).unwrap(),
+                        LocalTask::IsLeader(sender) => sender.send(true).unwrap()
                     }
                 }
-                Some(task) = receive_task(&mut handle.task_receiver, current_term) => {
-                    handle.persistent_state.current_term = task.get_term();
-                    handle.persistent_state.voted_for = None;
+                Some(task) = receive_task(&mut handle.remote_task_receiver, current_term) => {
+                    handle.election.update_current_term(task.get_term());
+                    handle.election.voted_for = None;
                     let new_role = task.handle(Role::Leader(self), handle).await;
                     if let Role::Leader(new_role) = new_role {
                         self = new_role;
@@ -103,7 +96,6 @@ impl Leader {
                         return new_role;
                     }
                 }
-                else => {} // no more replies
             }
         }
     }
@@ -115,48 +107,59 @@ enum AppendEntriesResult {
     Retry(NodeId),
 }
 
-fn on_receive_append_entries_reply(_reply: AppendEntriesReply) -> AppendEntriesResult {
-    todo!()
+fn on_receive_append_entries_reply(
+    reply: AppendEntriesReply,
+    current_term: TermId,
+) -> AppendEntriesResult {
+    if reply.term > current_term {
+        FoundLargerTerm(reply.term)
+    } else if reply.term == current_term {
+        todo!()
+    } else {
+        panic!("corrupted data");
+    }
 }
 
-type ReplicateLogFuture = impl Future<Output = result::Result<AppendEntriesReply, labrpc::Error>>;
+type ReplicateLogFuture = impl Future<Output = Result<AppendEntriesReply, labrpc::Error>>;
 
-fn replicate_log(leader: &Leader, handle: &Handle, node_id: NodeId) -> ReplicateLogFuture {
+fn send_append_entries(
+    leader: &Leader,
+    handle: &Handle,
+    node_id: NodeId,
+    entries: Vec<LogEntryProst>,
+) -> ReplicateLogFuture {
     let log_length = leader.state.next_index[node_id];
-    let log_state = if log_length > 0 {
-        let last_log_index = log_length - 1;
-        Some(
-            LogState::new(
-                handle.persistent_state.log[last_log_index].log_state.term,
-                last_log_index,
-            )
-            .into(),
-        )
-    } else {
-        None
-    };
-    let entries: Vec<LogEntryProst> = handle.persistent_state.log[log_length..]
-        .iter()
-        .map(|entry| entry.clone().into())
-        .collect();
+    let log_state = handle.logs.get_log_state_front(log_length).map(Into::into);
     let args = AppendEntriesArgs {
-        term: handle.persistent_state.current_term,
+        term: handle.election.get_current_term(),
         leader_id: handle.node_id as u64,
         log_state,
         entries,
-        leader_commit_index: handle.volatile_state.commit_index as u64,
+        leader_commit_length: handle.logs.get_commit_length() as u64,
     };
     let peer = handle.peers[node_id].clone();
     peer.append_entries(&args)
 }
 
-pub fn replicate_logs_followers<'a>(
+fn replicate_log<'a>(
     leader: &'a Leader,
     handle: &'a Handle,
-) -> impl Iterator<Item = ReplicateLogFuture> + 'a {
-    (0..handle.peers.len())
-        .filter(move |node_id| *node_id != handle.node_id)
-        .map(move |node_id| replicate_log(leader, handle, node_id))
+) -> impl Fn(NodeId) -> ReplicateLogFuture + 'a {
+    move |node_id| {
+        let log_length = leader.state.next_index[node_id];
+        let entries: Vec<LogEntryProst> = handle.logs.get_entries()[log_length..]
+            .iter()
+            .map(|entry| entry.clone().into())
+            .collect();
+        send_append_entries(leader, handle, node_id, entries)
+    }
+}
+
+fn check_heartbeat<'a>(
+    leader: &'a Leader,
+    handle: &'a Handle,
+) -> impl Fn(NodeId) -> ReplicateLogFuture + 'a {
+    move |node_id| send_append_entries(leader, handle, node_id, Vec::new())
 }
 
 #[derive(Debug, Clone)]
@@ -167,7 +170,7 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
-    fn new(log_kind: LogKind, data: Vec<u8>, index: usize, term: TermId) -> Self {
+    pub fn new(log_kind: LogKind, data: Vec<u8>, index: usize, term: TermId) -> Self {
         LogEntry {
             log_kind,
             data,
@@ -240,7 +243,7 @@ impl Into<LogEntryProst> for LogEntry {
 }
 
 #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Copy, Clone)]
-pub(crate) struct LogState {
+pub struct LogState {
     pub term: TermId,
     pub index: usize,
 }
@@ -268,29 +271,4 @@ impl Into<LogStateProst> for LogState {
 
 fn commit_log_entries() {
     todo!()
-}
-
-pub async fn append_entries_in_powerpoint(
-    handle: &mut Handle,
-    log_begin: usize,
-    mut entries: Vec<LogEntry>,
-    leader_commit: usize,
-) {
-    let log = &mut handle.persistent_state.log;
-    let commit_index = &mut handle.volatile_state.commit_index;
-
-    // update log
-    let mutation_offset = (0..min(entries.len(), log.len() - log_begin))
-        .find(|offset| entries[*offset].log_state.term != log[log_begin + *offset].log_state.term)
-        .unwrap_or(entries.len());
-    log.splice(
-        log_begin + mutation_offset..,
-        entries.drain(mutation_offset..),
-    );
-
-    // commit
-    *commit_index = max(*commit_index, leader_commit);
-    for entry in &log[*commit_index..leader_commit] {
-        handle.apply_ch.send(entry.clone().into()).await.unwrap(); // TODO: handle error
-    }
 }

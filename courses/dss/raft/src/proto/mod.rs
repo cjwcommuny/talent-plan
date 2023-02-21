@@ -60,7 +60,7 @@ pub mod raftpb {
         #[prost(message, repeated, tag = "4")]
         pub entries: Vec<LogEntryProst>,
         #[prost(uint64, tag = "5")]
-        pub leader_commit_index: u64,
+        pub leader_commit_length: u64,
     }
 
     #[derive(Clone, PartialEq, Eq, prost::Message)]

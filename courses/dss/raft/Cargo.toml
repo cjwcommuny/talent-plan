@@ -18,7 +18,7 @@ futures-timer = "3.0"
 log = "0.4"
 prost = "0.6"
 prost-derive = "0.6"
-rand = "0.7"
+rand = "0.8"
 tokio = { version = "1", features = ["full"] }
 num = "0.4.0"
 
@@ -27,7 +27,7 @@ labrpc = { path = "../labrpc" }
 linearizability = { path = "../linearizability"}
 
 [dev-dependencies]
-env_logger = "0.7"
+env_logger = "0.9"
 
 [build-dependencies]
 prost-build = "0.6"

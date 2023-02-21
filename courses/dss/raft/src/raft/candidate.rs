@@ -1,9 +1,10 @@
-use crate::proto::raftpb::{LogStateProst, RequestVoteArgs, RequestVoteReply};
+use crate::proto::raftpb::{RequestVoteArgs, RequestVoteReply};
 use crate::raft::errors::{Error, Result};
+use crate::raft::inner::{Handle, LocalTask};
 use crate::raft::leader::{Leader, VolatileLeaderState};
 use crate::raft::role::{Follower, Role};
-use crate::raft::{receive_task, Handle, TermId};
-use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
+use crate::raft::{receive_task, TermId};
+use futures::{stream::FuturesUnordered, FutureExt, Stream, StreamExt};
 use num::integer::div_ceil;
 use std::collections::HashSet;
 use std::future::Future;
@@ -17,48 +18,54 @@ pub struct Candidate {}
 impl Candidate {
     pub(crate) async fn transit(self, handle: &mut Handle) -> Role {
         let me = handle.node_id;
-        handle.persistent_state.current_term += 1;
-        handle.persistent_state.voted_for = Some(me);
-        let log_state = handle.persistent_state.log.last().map(|log| LogStateProst {
-            last_log_index: (handle.persistent_state.log.len() - 1) as u32,
-            last_log_term: log.log_state.term,
-        });
+        handle.election.increment_term();
+        handle.election.voted_for = Some(me);
+        let log_state = handle.logs.get_log_state().map(Into::into);
         let args = RequestVoteArgs {
             log_state,
-            term: handle.persistent_state.current_term,
+            term: handle.election.get_current_term(),
             candidate_id: me as u32,
         };
         let peers = &handle.peers;
-        let replies = (0..handle.peers.len())
-            .filter(|node_id| *node_id != me)
+        let replies: FuturesUnordered<_> = handle
+            .get_node_ids_except_mine()
             .map(|node_id| {
                 peers[node_id]
                     .request_vote(&args)
                     .map(|r| r.map_err(Error::Rpc))
-            });
+            })
+            .collect();
         // TODO: timer parameters as config
         let election_timer = sleep_until(Instant::now() + Duration::from_millis(200));
         let electoral_threshold = div_ceil(handle.peers.len() + 1, 2);
-        let current_term = handle.persistent_state.current_term;
+        let current_term = handle.election.get_current_term();
         select! {
             _ = election_timer => {
                 Role::Candidate(self)
             }
-            Some(task) = receive_task(&mut handle.task_receiver, current_term) => {
-                handle.persistent_state.current_term = task.get_term();
-                handle.persistent_state.voted_for = None;
+            Some(task) = receive_task(&mut handle.remote_task_receiver, current_term) => {
+                handle.election.update_current_term(task.get_term());
+                handle.election.voted_for = None;
                 task.handle(Role::Candidate(self), handle).await
             }
-            vote_result = collect_vote(replies, electoral_threshold, handle.persistent_state.current_term) => match vote_result {
+            Some(task) = handle.local_task_receiver.recv() => {
+                match task {
+                    LocalTask::AppendEntries { sender, .. } => sender.send(None).unwrap(),
+                    LocalTask::GetTerm(sender) => sender.send(handle.election.get_current_term()).unwrap(),
+                    LocalTask::IsLeader(sender) => sender.send(false).unwrap(),
+                }
+                Role::Candidate(self)
+            }
+            vote_result = collect_vote(replies, electoral_threshold, handle.election.get_current_term()) => match vote_result {
                 VoteResult::Elected => {
-                    Role::Leader(Leader::new(VolatileLeaderState::new(handle.persistent_state.log.len(), handle.peers.len())))
+                    Role::Leader(Leader::new(VolatileLeaderState::new(handle.logs.get_entries().len(), handle.peers.len())))
                 }
                 VoteResult::Unsuccess => {
                     Role::Candidate(self)
                 }
                 VoteResult::FoundLargerTerm(new_term) => {
-                    handle.persistent_state.current_term = new_term;
-                    handle.persistent_state.voted_for = None;
+                    handle.election.update_current_term(new_term);
+                    handle.election.voted_for = None;
                     Role::Follower(Follower::default())
                 }
             }
@@ -72,15 +79,11 @@ enum VoteResult {
     FoundLargerTerm(TermId),
 }
 
-async fn collect_vote<F>(
-    replies: impl Iterator<Item = F>,
+async fn collect_vote(
+    mut replies: impl Stream<Item = Result<RequestVoteReply>> + Unpin,
     electoral_threshold: usize,
     current_term: TermId,
-) -> VoteResult
-where
-    F: Future<Output = Result<RequestVoteReply>>,
-{
-    let mut replies: FuturesUnordered<_> = replies.collect();
+) -> VoteResult {
     let mut votes_received = HashSet::new();
     while let Some(reply) = replies.next().await.map(|r| r.unwrap()) {
         // TODO: remove unwrap
