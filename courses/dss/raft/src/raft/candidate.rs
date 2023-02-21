@@ -7,7 +7,7 @@ use crate::raft::{receive_task, TermId};
 use futures::{stream::FuturesUnordered, FutureExt, Stream, StreamExt};
 use num::integer::div_ceil;
 use std::collections::HashSet;
-use std::future::Future;
+
 use std::time::Duration;
 use tokio::select;
 use tokio::time::{sleep_until, Instant};

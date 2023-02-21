@@ -6,13 +6,10 @@ use tokio::time::{sleep_until, Instant};
 use crate::proto::raftpb::{
     AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply,
 };
-use futures::FutureExt;
-
-use crate::raft::receive_task;
-
 use crate::raft::candidate::Candidate;
 use crate::raft::inner::{Handle, LocalTask};
 use crate::raft::leader::{Leader, LogEntry, LogState};
+use crate::raft::receive_task;
 
 #[derive(Debug)]
 pub enum Role {
@@ -76,32 +73,43 @@ impl Role {
             handle.election.voted_for = None;
             let reply = AppendEntriesReply {
                 term: handle.election.get_current_term(),
-                success: false,
+                match_length: None,
+                node_id: handle.node_id as u32,
             };
             (reply, self)
         } else {
             let new_role = if matches!(self, Role::Follower { .. }) {
-                Role::Follower(Follower::default())
-            } else {
                 self
+            } else {
+                Role::Follower(Follower::default())
             };
             let remote_log_state = args.log_state.map(Into::<LogState>::into);
-            let local_log_state = remote_log_state
-                .map(|remote_state| handle.logs.get_entries()[remote_state.index].log_state);
-            let log_ok = remote_log_state == local_log_state;
-            if log_ok {
-                let log_begin = remote_log_state.map_or(0, |state| state.index + 1);
-                let entries: Vec<LogEntry> = args.entries.into_iter().map(Into::into).collect();
-                handle.logs.update_log(log_begin, entries);
+            let local_log_state = remote_log_state.and_then(|remote_state| {
                 handle
                     .logs
-                    .commit_log(args.leader_commit_length as usize)
+                    .get_entries()
+                    .get(remote_state.index)
+                    .map(|entry| entry.log_state)
+            });
+            let log_ok = remote_log_state == local_log_state;
+            let match_length = if log_ok {
+                let log_begin = remote_log_state.map_or(0, |state| state.index + 1);
+                let entries: Vec<LogEntry> = args.entries.into_iter().map(Into::into).collect();
+                let match_length = Some((log_begin + entries.len()) as u64);
+                handle.logs.update_log_tail(log_begin, entries);
+                handle
+                    .logs
+                    .commit_logs(args.leader_commit_length as usize)
                     .await;
-            }
+                match_length
+            } else {
+                None
+            };
             handle.election.update_current_term(args.term);
             let reply = AppendEntriesReply {
                 term: handle.election.get_current_term(),
-                success: log_ok,
+                match_length,
+                node_id: handle.node_id as u32,
             };
             (reply, new_role)
         }

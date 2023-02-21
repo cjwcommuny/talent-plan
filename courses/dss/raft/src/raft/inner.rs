@@ -101,11 +101,12 @@ pub enum LocalTask {
     IsLeader(oneshot::Sender<bool>),
 }
 
+/// In the Raft paper, there is `lastApplied` field.
+/// But here, we don't distinguish between `commit_length` and `last_applied + 1` for convenience.
 pub struct Logs {
     log: Vec<LogEntry>,
     apply_ch: UnboundedSender<ApplyMsg>,
     commit_length: usize,
-    last_applied: Option<usize>,
 }
 
 impl Logs {
@@ -114,8 +115,11 @@ impl Logs {
             log: Vec::new(),
             apply_ch,
             commit_length: 0,
-            last_applied: None,
         }
+    }
+
+    pub fn get_log_len(&self) -> usize {
+        self.log.len()
     }
 
     pub fn get_commit_length(&self) -> usize {
@@ -145,23 +149,27 @@ impl Logs {
         }
     }
 
-    pub fn update_log(&mut self, log_begin: usize, mut entries: Vec<LogEntry>) {
-        let mutation_offset = (0..min(entries.len(), self.log.len() - log_begin))
+    pub fn update_log_tail(&mut self, tail_begin: usize, mut entries: Vec<LogEntry>) {
+        let limit = min(entries.len(), self.log.len() - tail_begin);
+        let mutation_offset = (0..limit)
             .find(|offset| {
-                entries[*offset].log_state.term != self.log[log_begin + *offset].log_state.term
+                entries[*offset].log_state.term != self.log[tail_begin + *offset].log_state.term
             })
-            .unwrap_or(entries.len());
+            .unwrap_or(limit);
         self.log.splice(
-            log_begin + mutation_offset..,
+            tail_begin + mutation_offset..,
             entries.drain(mutation_offset..),
         );
     }
 
-    pub async fn commit_log(&mut self, leader_commit_length: usize) {
-        for entry in &self.log[self.commit_length..leader_commit_length] {
+    pub async fn commit_logs(&mut self, new_commit_length: usize) {
+        // here `lastApplied` and `commitIndex` from the Raft paper are the same
+        // since we don't distinguish between `apply` and `commit`
+        let limit = min(new_commit_length, self.log.len());
+        for entry in &self.log[self.commit_length..limit] {
             self.apply_ch.send(entry.clone().into()).await.unwrap(); // TODO: handle error
         }
-        self.commit_length = max(self.commit_length, leader_commit_length); // FIXME
+        self.commit_length = max(self.commit_length, limit); // FIXME
     }
 }
 
