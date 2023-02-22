@@ -165,15 +165,15 @@ impl Logs {
     pub async fn commit_logs(&mut self, new_commit_length: usize) {
         // here `lastApplied` and `commitIndex` from the Raft paper are the same
         // since we don't distinguish between `apply` and `commit`
-        let limit = min(new_commit_length, self.log.len());
-        for entry in &self.log[self.commit_length..limit] {
+        assert!(new_commit_length < self.log.len());
+        for entry in &self.log[self.commit_length..new_commit_length] {
             self.apply_ch.send(entry.clone().into()).await.unwrap(); // TODO: handle error
         }
-        self.commit_length = max(self.commit_length, limit); // FIXME
+        self.commit_length = max(self.commit_length, new_commit_length); // FIXME
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Election {
     current_term: TermId,
     pub voted_for: Option<NodeId>,
