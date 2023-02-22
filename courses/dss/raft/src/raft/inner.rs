@@ -10,6 +10,7 @@ use futures::channel::mpsc::UnboundedSender;
 use futures::SinkExt;
 use std::cmp::{max, min};
 
+use crate::raft::logs::Logs;
 use tokio::sync::{mpsc, oneshot};
 
 pub struct RaftInner {
@@ -76,7 +77,11 @@ impl Handle {
 
     /// In the Raft paper, there is `lastApplied` field.
     /// But here, we don't don't make the execution of this function a transaction.
-    pub async fn apply_messages<I, M>(apply_ch: &mut UnboundedSender<ApplyMsg>, messages: I) where I: Iterator<Item = M>, M: Into<ApplyMsg> {
+    pub async fn apply_messages<I, M>(apply_ch: &mut UnboundedSender<ApplyMsg>, messages: I)
+    where
+        I: Iterator<Item = M>,
+        M: Into<ApplyMsg>,
+    {
         for entry in messages {
             apply_ch.send(entry.into()).await.unwrap();
         }
@@ -109,79 +114,7 @@ pub enum LocalTask {
         sender: oneshot::Sender<Option<(u64, u64)>>, // None if not leader
     },
     GetTerm(oneshot::Sender<TermId>),
-    IsLeader(oneshot::Sender<bool>),
-}
-
-
-/// ```plot
-/// log = |--- committed --- | --- uncommitted --- |
-///       0            commit_length            log.len()
-/// ```
-///
-#[derive(Default, Debug)]
-pub struct Logs {
-    log: Vec<LogEntry>,
-    commit_length: usize,
-}
-
-impl Logs {
-    pub fn get_log_len(&self) -> usize {
-        self.log.len()
-    }
-
-    pub fn get_commit_length(&self) -> usize {
-        self.commit_length
-    }
-
-    pub fn add_log(&mut self, log_kind: LogKind, data: Vec<u8>, term: TermId) -> usize {
-        let index = self.log.len();
-        self.log.push(LogEntry::new(log_kind, data, index, term));
-        index
-    }
-
-    pub fn get(&self, index: usize) -> Option<&LogEntry> {
-        self.log.get(index)
-    }
-
-    pub fn get_tail(&self, tail_begin: usize) -> impl Iterator<Item = &LogEntry> {
-        self.log[tail_begin..].iter()
-    }
-
-    pub fn get_log_state(&self) -> Option<LogState> {
-        self.log.last().map(|entry| entry.log_state)
-    }
-
-    /// return `LogState` of `self.log[..length]`
-    pub fn get_log_state_front(&self, length: usize) -> Option<LogState> {
-        if length > 0 {
-            Some(self.log[length - 1].log_state)
-        } else {
-            None
-        }
-    }
-
-    pub fn update_log_tail(&mut self, tail_begin: usize, mut entries: Vec<LogEntry>) {
-        assert!(tail_begin >= self.commit_length); // must not modify committed logs
-        let limit = min(entries.len(), self.log.len() - tail_begin);
-        let mutation_offset = (0..limit)
-            .find(|offset| {
-                entries[*offset].log_state.term != self.log[tail_begin + *offset].log_state.term
-            })
-            .unwrap_or(limit);
-        self.log.splice(
-            tail_begin + mutation_offset..,
-            entries.drain(mutation_offset..),
-        );
-    }
-
-    /// returns the logs just committed
-    pub fn commit_logs(&mut self, new_commit_length: usize) -> impl Iterator<Item = &LogEntry> {
-        assert!(new_commit_length <= self.log.len());
-        let just_committed = self.log[self.commit_length..new_commit_length].iter();
-        // `self.commit_length` can be incremented only
-        self.commit_length = max(self.commit_length, new_commit_length);
-        just_committed
-    }
+    CheckLeader(oneshot::Sender<bool>),
 }
 
 #[derive(Default, Debug)]

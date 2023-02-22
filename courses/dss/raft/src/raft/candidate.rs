@@ -52,7 +52,7 @@ impl Candidate {
                 match task {
                     LocalTask::AppendEntries { sender, .. } => sender.send(None).unwrap(),
                     LocalTask::GetTerm(sender) => sender.send(handle.election.get_current_term()).unwrap(),
-                    LocalTask::IsLeader(sender) => sender.send(false).unwrap(),
+                    LocalTask::CheckLeader(sender) => sender.send(false).unwrap(),
                 }
                 Role::Candidate(self)
             }

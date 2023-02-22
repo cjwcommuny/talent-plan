@@ -40,12 +40,12 @@ impl Role {
         let term_ok = {
             let current_term = handle.election.get_current_term();
             let voted_for = handle.election.voted_for;
-            current_term > args.term
-                || (current_term == args.term
+            args.term > current_term
+                || (args.term == args.term
                     && (voted_for.is_none() || voted_for == Some(args.candidate_id as usize)))
         };
         if log_ok && term_ok {
-            handle.election.increment_term();
+            handle.election.update_current_term(args.term);
             let new_role = Role::Follower(Follower::default());
             handle.election.voted_for = Some(args.candidate_id as usize);
             let response = RequestVoteReply {
@@ -96,7 +96,10 @@ impl Role {
                 let entries: Vec<LogEntry> = args.entries.into_iter().map(Into::into).collect();
                 let match_length = Some((log_begin + entries.len()) as u64);
                 handle.logs.update_log_tail(log_begin, entries);
-                let logs = handle.logs.commit_logs(args.leader_commit_length as usize).map(Clone::clone);
+                let logs = handle
+                    .logs
+                    .commit_logs(args.leader_commit_length as usize)
+                    .map(Clone::clone);
                 Handle::apply_messages(&mut handle.apply_ch, logs).await;
                 match_length
             } else {
@@ -129,7 +132,7 @@ impl Follower {
                 match task {
                     LocalTask::AppendEntries { sender, .. } => sender.send(None).unwrap(),
                     LocalTask::GetTerm(sender) => sender.send(handle.election.get_current_term()).unwrap(),
-                    LocalTask::IsLeader(sender) => sender.send(false).unwrap(),
+                    LocalTask::CheckLeader(sender) => sender.send(false).unwrap(),
                 }
                 Role::Follower(self)
             }

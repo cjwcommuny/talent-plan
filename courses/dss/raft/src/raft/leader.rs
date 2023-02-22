@@ -68,7 +68,12 @@ impl Leader {
                             try_commit_logs(&self, handle).await
                         }
                         AppendEntriesResult::Retry(node_id) => {
-                            self.state.next_index[node_id] -= 1; // TODO: independent retry strategy
+                            // TODO: independent retry strategy
+                            // if `self.state.next_index[node_id] == 0`, the follower is out of date
+                            // we still need to retry
+                            if self.state.next_index[node_id] > 0 {
+                                self.state.next_index[node_id] -= 1;
+                            }
                             let future = replicate_log(&self, handle)(node_id);
                             rpc_replies.push(future);
                         }
@@ -88,12 +93,10 @@ impl Leader {
                             rpc_replies.extend(handle.get_node_ids_except_mine().map(replicate_log(&self, handle)));
                         }
                         LocalTask::GetTerm(sender) => sender.send(handle.election.get_current_term()).unwrap(),
-                        LocalTask::IsLeader(sender) => sender.send(true).unwrap()
+                        LocalTask::CheckLeader(sender) => sender.send(true).unwrap()
                     }
                 }
                 Some(task) = receive_task(&mut handle.remote_task_receiver, current_term) => {
-                    handle.election.update_current_term(task.get_term());
-                    handle.election.voted_for = None;
                     let new_role = task.handle(Role::Leader(self), handle).await;
                     if let Role::Leader(new_role) = new_role {
                         self = new_role;
@@ -110,24 +113,18 @@ impl Leader {
         reply: AppendEntriesReply,
         current_term: TermId,
     ) -> AppendEntriesResult {
+        let follower_id = reply.node_id as usize;
         if reply.term > current_term {
             FoundLargerTerm(reply.term)
-        } else if reply.term == current_term {
-            let follower_id = reply.node_id as usize;
-            if let Some(match_length) = reply.match_length {
-                let match_length = match_length as usize;
-                assert!(match_length > self.state.match_length[follower_id]);
-                Commit {
-                    follower_id,
-                    match_length,
-                }
-            } else {
-                /// if `next_index[follower_id] == 0`, it must success
-                assert!(self.state.next_index[follower_id] > 0);
-                Retry(follower_id)
+        } else if reply.term == current_term && let Some(match_length) = reply.match_length {
+            let match_length = match_length as usize;
+            assert!(match_length > self.state.match_length[follower_id]);
+            Commit {
+                follower_id,
+                match_length,
             }
         } else {
-            panic!("corrupted data: {:?}", reply);
+            Retry(follower_id)
         }
     }
 }
@@ -137,7 +134,12 @@ enum AppendEntriesResult {
     Commit {
         follower_id: NodeId,
         match_length: usize,
-    }, // match_length
+    },
+
+    /// There are two possibilities:
+    /// 1. the previous `AppendEntries` didn't success, `reply.match_length == None`
+    /// 2. `reply.term < leader.term`, which means the follower is out-of-date
+    ///         (the reply is too late)
     Retry(NodeId),
 }
 
@@ -187,7 +189,9 @@ fn replicate_log<'a>(
 ) -> impl Fn(NodeId) -> ReplicateLogFuture + 'a {
     move |node_id| {
         let log_length = leader.state.next_index[node_id];
-        let entries: Vec<LogEntryProst> = handle.logs.get_tail(log_length)
+        let entries: Vec<LogEntryProst> = handle
+            .logs
+            .get_tail(log_length)
             .map(Clone::clone)
             .map(Into::into)
             .collect();

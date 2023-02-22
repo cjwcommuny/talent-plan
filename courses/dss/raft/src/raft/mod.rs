@@ -4,28 +4,30 @@ use futures::FutureExt;
 use futures::TryFutureExt;
 use inner::{Handle, RemoteTask};
 use labrpc::Error::{Other, Recv};
+use logs::Logs;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
 mod candidate;
+mod common;
 #[cfg(test)]
 pub mod config;
 pub mod errors;
 mod inner;
 mod leader;
+mod logs;
 pub mod persister;
 mod role;
 #[cfg(test)]
 mod tests;
-mod common;
 
 use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
 
-use crate::raft::inner::{Election, LocalTask, Logs, RaftInner};
+use crate::raft::inner::{Election, LocalTask, RaftInner};
 use crate::raft::leader::{LogEntry, LogState};
 
 /// As each Raft peer becomes aware that successive log entries are committed,
@@ -290,7 +292,7 @@ impl Node {
             .runtime
             .block_on(pass_message(
                 &self.raft.local_task_sender,
-                LocalTask::IsLeader,
+                LocalTask::CheckLeader,
             ))
             .unwrap()
     }
