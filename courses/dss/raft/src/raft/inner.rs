@@ -40,6 +40,7 @@ pub struct Handle {
     pub persister: Box<dyn Persister>, // Object to hold this peer's persisted state
     pub election: Election,
     pub logs: Logs,
+    pub apply_ch: UnboundedSender<ApplyMsg>,
     pub peers: Vec<RaftClient>, // RPC end points of all peers
     pub remote_task_receiver: mpsc::Receiver<RemoteTask>,
     pub local_task_receiver: mpsc::Receiver<LocalTask>,
@@ -51,6 +52,7 @@ impl Handle {
         persister: Box<dyn Persister>,
         election: Election,
         logs: Logs,
+        apply_ch: UnboundedSender<ApplyMsg>,
         peers: Vec<RaftClient>,
         remote_task_receiver: mpsc::Receiver<RemoteTask>,
         local_task_receiver: mpsc::Receiver<LocalTask>,
@@ -60,6 +62,7 @@ impl Handle {
             persister,
             election,
             logs,
+            apply_ch,
             peers,
             remote_task_receiver,
             local_task_receiver,
@@ -69,6 +72,14 @@ impl Handle {
     pub fn get_node_ids_except_mine(&self) -> impl Iterator<Item = NodeId> {
         let me = self.node_id;
         (0..self.peers.len()).filter(move |node_id| *node_id != me)
+    }
+
+    /// In the Raft paper, there is `lastApplied` field.
+    /// But here, we don't don't make the execution of this function a transaction.
+    pub async fn apply_messages<I, M>(apply_ch: &mut UnboundedSender<ApplyMsg>, messages: I) where I: Iterator<Item = M>, M: Into<ApplyMsg> {
+        for entry in messages {
+            apply_ch.send(entry.into()).await.unwrap();
+        }
     }
 }
 
@@ -101,23 +112,19 @@ pub enum LocalTask {
     IsLeader(oneshot::Sender<bool>),
 }
 
-/// In the Raft paper, there is `lastApplied` field.
-/// But here, we don't distinguish between `commit_length` and `last_applied + 1` for convenience.
+
+/// ```plot
+/// log = |--- committed --- | --- uncommitted --- |
+///       0            commit_length            log.len()
+/// ```
+///
+#[derive(Default, Debug)]
 pub struct Logs {
     log: Vec<LogEntry>,
-    apply_ch: UnboundedSender<ApplyMsg>,
     commit_length: usize,
 }
 
 impl Logs {
-    pub fn new(apply_ch: UnboundedSender<ApplyMsg>) -> Self {
-        Logs {
-            log: Vec::new(),
-            apply_ch,
-            commit_length: 0,
-        }
-    }
-
     pub fn get_log_len(&self) -> usize {
         self.log.len()
     }
@@ -132,8 +139,12 @@ impl Logs {
         index
     }
 
-    pub fn get_entries(&self) -> &[LogEntry] {
-        &self.log
+    pub fn get(&self, index: usize) -> Option<&LogEntry> {
+        self.log.get(index)
+    }
+
+    pub fn get_tail(&self, tail_begin: usize) -> impl Iterator<Item = &LogEntry> {
+        self.log[tail_begin..].iter()
     }
 
     pub fn get_log_state(&self) -> Option<LogState> {
@@ -150,6 +161,7 @@ impl Logs {
     }
 
     pub fn update_log_tail(&mut self, tail_begin: usize, mut entries: Vec<LogEntry>) {
+        assert!(tail_begin >= self.commit_length); // must not modify committed logs
         let limit = min(entries.len(), self.log.len() - tail_begin);
         let mutation_offset = (0..limit)
             .find(|offset| {
@@ -162,14 +174,13 @@ impl Logs {
         );
     }
 
-    pub async fn commit_logs(&mut self, new_commit_length: usize) {
-        // here `lastApplied` and `commitIndex` from the Raft paper are the same
-        // since we don't distinguish between `apply` and `commit`
-        assert!(new_commit_length < self.log.len());
-        for entry in &self.log[self.commit_length..new_commit_length] {
-            self.apply_ch.send(entry.clone().into()).await.unwrap(); // TODO: handle error
-        }
-        self.commit_length = max(self.commit_length, new_commit_length); // FIXME
+    /// returns the logs just committed
+    pub fn commit_logs(&mut self, new_commit_length: usize) -> impl Iterator<Item = &LogEntry> {
+        assert!(new_commit_length <= self.log.len());
+        let just_committed = self.log[self.commit_length..new_commit_length].iter();
+        // `self.commit_length` can be incremented only
+        self.commit_length = max(self.commit_length, new_commit_length);
+        just_committed
     }
 }
 

@@ -87,7 +87,6 @@ impl Role {
             let local_log_state = remote_log_state.and_then(|remote_state| {
                 handle
                     .logs
-                    .get_entries()
                     .get(remote_state.index)
                     .map(|entry| entry.log_state)
             });
@@ -97,10 +96,8 @@ impl Role {
                 let entries: Vec<LogEntry> = args.entries.into_iter().map(Into::into).collect();
                 let match_length = Some((log_begin + entries.len()) as u64);
                 handle.logs.update_log_tail(log_begin, entries);
-                handle
-                    .logs
-                    .commit_logs(args.leader_commit_length as usize)
-                    .await;
+                let logs = handle.logs.commit_logs(args.leader_commit_length as usize).map(Clone::clone);
+                Handle::apply_messages(&mut handle.apply_ch, logs).await;
                 match_length
             } else {
                 None

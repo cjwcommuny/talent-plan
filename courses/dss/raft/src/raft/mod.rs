@@ -19,6 +19,7 @@ pub mod persister;
 mod role;
 #[cfg(test)]
 mod tests;
+mod common;
 
 use self::errors::*;
 use self::persister::*;
@@ -154,7 +155,8 @@ impl Raft {
                 node_id,
                 persister,
                 Election::default(),
-                Logs::new(apply_ch),
+                Logs::default(),
+                apply_ch,
                 peers,
                 remote_task_receiver,
                 local_task_receiver,

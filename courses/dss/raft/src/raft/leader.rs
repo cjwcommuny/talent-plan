@@ -157,7 +157,8 @@ async fn try_commit_logs(leader: &Leader, handle: &mut Handle) {
         .unwrap_or(handle.logs.get_log_len())
         .checked_sub(1)
         .unwrap();
-    handle.logs.commit_logs(ready).await
+    let messages = handle.logs.commit_logs(ready).map(Clone::clone);
+    Handle::apply_messages(&mut handle.apply_ch, messages).await
 }
 
 type ReplicateLogFuture = impl Future<Output = Result<AppendEntriesReply, labrpc::Error>>;
@@ -186,8 +187,7 @@ fn replicate_log<'a>(
 ) -> impl Fn(NodeId) -> ReplicateLogFuture + 'a {
     move |node_id| {
         let log_length = leader.state.next_index[node_id];
-        let entries: Vec<LogEntryProst> = handle.logs.get_entries()[log_length..]
-            .iter()
+        let entries: Vec<LogEntryProst> = handle.logs.get_tail(log_length)
             .map(Clone::clone)
             .map(Into::into)
             .collect();

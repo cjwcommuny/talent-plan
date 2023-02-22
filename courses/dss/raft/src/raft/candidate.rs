@@ -58,7 +58,7 @@ impl Candidate {
             }
             vote_result = collect_vote(replies, electoral_threshold, handle.election.get_current_term()) => match vote_result {
                 VoteResult::Elected => {
-                    Role::Leader(Leader::new(VolatileLeaderState::new(handle.logs.get_entries().len(), handle.peers.len())))
+                    Role::Leader(Leader::new(VolatileLeaderState::new(handle.logs.get_log_len(), handle.peers.len())))
                 }
                 VoteResult::Unsuccess => {
                     Role::Candidate(self)
