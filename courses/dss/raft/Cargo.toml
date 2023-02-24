@@ -20,6 +20,8 @@ prost = "0.6"
 prost-derive = "0.6"
 rand = "0.8"
 tokio = { version = "1", features = ["full"] }
+tracing = { version = "0.1", features = ["attributes"] }
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 num = "0.4.0"
 
 labcodec = { path = "../labcodec" }

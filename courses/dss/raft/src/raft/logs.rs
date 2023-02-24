@@ -1,6 +1,7 @@
 use crate::raft::leader::{LogEntry, LogKind, LogState};
 use crate::raft::TermId;
-use std::cmp::{max, min};
+use std::cmp::min;
+use tracing::instrument;
 
 /// `commit_length` split the logs to the two sections:
 ///
@@ -44,21 +45,22 @@ impl Logs {
 
     /// return `LogState` of `self.log[..length]`
     pub fn get_log_state_front(&self, length: usize) -> Option<LogState> {
-        if length > 0 {
-            Some(self.logs[length - 1].log_state)
-        } else {
+        if length == 0 {
             None
+        } else {
+            Some(self.logs[length - 1].log_state)
         }
     }
 
+    // TODO: test
     pub fn update_log_tail(&mut self, tail_begin: usize, mut entries: Vec<LogEntry>) {
         assert!(tail_begin >= self.commit_length); // must not modify committed logs
-        let limit = min(entries.len(), self.logs.len() - tail_begin);
-        let mutation_offset = (0..limit)
+        let max_offset = min(entries.len(), self.logs.len() - tail_begin);
+        let mutation_offset = (0..max_offset)
             .find(|offset| {
                 entries[*offset].log_state.term != self.logs[tail_begin + *offset].log_state.term
             })
-            .unwrap_or(limit);
+            .unwrap_or(max_offset);
         self.logs.splice(
             tail_begin + mutation_offset..,
             entries.drain(mutation_offset..),
@@ -66,11 +68,14 @@ impl Logs {
     }
 
     /// returns the logs just committed
+    #[instrument(skip(self))]
     pub fn commit_logs(&mut self, new_commit_length: usize) -> impl Iterator<Item = &LogEntry> {
+        debug!("logs.len(): {}", self.logs.len());
         assert!(new_commit_length <= self.logs.len());
-        let just_committed = self.logs[self.commit_length..new_commit_length].iter();
+        let newly_committed = self.logs[self.commit_length..new_commit_length].iter();
         // `self.commit_length` can be incremented only
-        self.commit_length = max(self.commit_length, new_commit_length);
-        just_committed
+        assert!(self.commit_length <= new_commit_length);
+        self.commit_length = new_commit_length;
+        newly_committed
     }
 }

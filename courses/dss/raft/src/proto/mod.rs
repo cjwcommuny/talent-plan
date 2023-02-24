@@ -55,7 +55,9 @@ pub mod raftpb {
         pub term: u64,
         #[prost(uint64, tag = "2")]
         pub leader_id: u64,
+
         #[prost(message, optional, tag = "3")]
+        /// None if logs is empty
         pub log_state: Option<LogStateProst>,
         #[prost(message, repeated, tag = "4")]
         pub entries: Vec<LogEntryProst>,

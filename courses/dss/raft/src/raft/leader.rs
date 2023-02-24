@@ -3,11 +3,10 @@ use crate::proto::raftpb::{LogEntryProst, LogStateProst};
 use crate::raft::inner::{Handle, LocalTask};
 use crate::raft::leader::AppendEntriesResult::{Commit, FoundLargerTerm, Retry};
 use crate::raft::role::{Follower, Role};
-use crate::raft::{receive_task, ApplyMsg, NodeId, TermId};
+use crate::raft::{ApplyMsg, NodeId, TermId};
 use futures::{stream::FuturesUnordered, StreamExt};
 use std::future::Future;
 
-use num::integer::div_ceil;
 use std::time::Duration;
 use tokio::select;
 use tokio::time::interval;
@@ -46,7 +45,7 @@ impl Leader {
         Leader { state }
     }
 
-    pub(crate) async fn transit(mut self, handle: &mut Handle) -> Role {
+    pub(crate) async fn progress(mut self, handle: &mut Handle) -> Role {
         let mut rpc_replies: FuturesUnordered<_> = handle
             .get_node_ids_except_mine()
             .map(replicate_log(&self, handle))
@@ -93,11 +92,12 @@ impl Leader {
                             rpc_replies.extend(handle.get_node_ids_except_mine().map(replicate_log(&self, handle)));
                         }
                         LocalTask::GetTerm(sender) => sender.send(handle.election.get_current_term()).unwrap(),
-                        LocalTask::CheckLeader(sender) => sender.send(true).unwrap()
+                        LocalTask::CheckLeader(sender) => sender.send(true).unwrap(),
+                        LocalTask::Shutdown(sender) => sender.send(()).unwrap(),
                     }
                 }
-                Some(task) = receive_task(&mut handle.remote_task_receiver, current_term) => {
-                    let new_role = task.handle(Role::Leader(self), handle).await;
+                Some(task) = handle.remote_task_receiver.recv() => {
+                    let new_role = task.handle(Role::Leader(self), handle).await; // FIXME
                     if let Role::Leader(new_role) = new_role {
                         self = new_role;
                     } else {
@@ -144,7 +144,7 @@ enum AppendEntriesResult {
 }
 
 async fn try_commit_logs(leader: &Leader, handle: &mut Handle) {
-    let commit_threshold = div_ceil(handle.peers.len() + 1, 2);
+    let commit_threshold = handle.get_majority_threshold();
     let compute_acks = |length_threshold| {
         leader
             .state

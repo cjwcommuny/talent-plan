@@ -3,48 +3,48 @@ use crate::raft::errors::{Error, Result};
 use crate::raft::inner::{Handle, LocalTask};
 use crate::raft::leader::{Leader, VolatileLeaderState};
 use crate::raft::role::{Follower, Role};
-use crate::raft::{receive_task, TermId};
+use crate::raft::TermId;
 use futures::{stream::FuturesUnordered, FutureExt, Stream, StreamExt};
-use num::integer::div_ceil;
 use std::collections::HashSet;
 
 use std::time::Duration;
 use tokio::select;
 use tokio::time::{sleep_until, Instant};
+use tracing::{debug, instrument};
 
-#[derive(Debug)]
-pub struct Candidate {}
+#[derive(Debug, Default)]
+pub struct Candidate;
 
 impl Candidate {
-    pub(crate) async fn transit(self, handle: &mut Handle) -> Role {
-        let me = handle.node_id;
+    #[instrument(ret)]
+    pub(crate) async fn progress(self, handle: &mut Handle) -> Role {
         handle.election.increment_term();
-        handle.election.voted_for = Some(me);
-        let log_state = handle.logs.get_log_state().map(Into::into);
-        let args = RequestVoteArgs {
-            log_state,
-            term: handle.election.get_current_term(),
-            candidate_id: me as u32,
-        };
+        handle.election.voted_for = Some(handle.node_id);
         let peers = &handle.peers;
-        let replies: FuturesUnordered<_> = handle
-            .get_node_ids_except_mine()
-            .map(|node_id| {
-                peers[node_id]
-                    .request_vote(&args)
-                    .map(|r| r.map_err(Error::Rpc))
-            })
-            .collect();
-        // TODO: timer parameters as config
-        let election_timer = sleep_until(Instant::now() + Duration::from_millis(200));
-        let electoral_threshold = div_ceil(handle.peers.len() + 1, 2);
-        let current_term = handle.election.get_current_term();
+        let replies: FuturesUnordered<_> = {
+            let args = RequestVoteArgs {
+                log_state: handle.logs.get_log_state().map(Into::into),
+                term: handle.election.get_current_term(),
+                candidate_id: handle.node_id as u32,
+            };
+            handle
+                .get_node_ids_except_mine()
+                .map(|node_id| {
+                    peers[node_id]
+                        .request_vote(&args)
+                        .map(|r| r.map_err(Error::Rpc))
+                })
+                .collect()
+        };
+        let election_timer =
+            sleep_until(Instant::now() + Duration::from_millis(handle.config.election_timeout));
+        let electoral_threshold = handle.get_majority_threshold();
         select! {
             _ = election_timer => {
                 Role::Candidate(self)
             }
-            Some(task) = receive_task(&mut handle.remote_task_receiver, current_term) => {
-                handle.election.update_current_term(task.get_term());
+            Some(task) = handle.remote_task_receiver.recv() => {
+                handle.election.update_current_term(task.get_term()); // FIXME: when to interrupt
                 handle.election.voted_for = None;
                 task.handle(Role::Candidate(self), handle).await
             }
@@ -53,10 +53,15 @@ impl Candidate {
                     LocalTask::AppendEntries { sender, .. } => sender.send(None).unwrap(),
                     LocalTask::GetTerm(sender) => sender.send(handle.election.get_current_term()).unwrap(),
                     LocalTask::CheckLeader(sender) => sender.send(false).unwrap(),
+                    LocalTask::Shutdown(sender) => sender.send(()).unwrap(),
                 }
                 Role::Candidate(self)
             }
-            vote_result = collect_vote(replies, electoral_threshold, handle.election.get_current_term()) => match vote_result {
+            vote_result = collect_vote(
+                replies,
+                electoral_threshold,
+                handle.election.get_current_term()
+            ) => match vote_result {
                 VoteResult::Elected => {
                     Role::Leader(Leader::new(VolatileLeaderState::new(handle.logs.get_log_len(), handle.peers.len())))
                 }

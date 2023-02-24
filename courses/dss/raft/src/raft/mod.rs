@@ -1,14 +1,13 @@
 use crate::raft::role::Role;
 use futures::channel::oneshot::Canceled;
-use futures::FutureExt;
 use futures::TryFutureExt;
 use inner::{Handle, RemoteTask};
 use labrpc::Error::{Other, Recv};
 use logs::Logs;
+use rand::thread_rng;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::runtime::Runtime;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 mod candidate;
 mod common;
@@ -27,8 +26,7 @@ use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
 
-use crate::raft::inner::{Election, LocalTask, RaftInner};
-use crate::raft::leader::{LogEntry, LogState};
+use crate::raft::inner::{Config, Election, LocalTask, RaftInner};
 
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
@@ -68,61 +66,17 @@ impl State {
 type NodeId = usize;
 type TermId = u64;
 
-struct Config;
-
-impl Config {
-    const ELECTION_TIMEOUT: Duration = Duration::from_millis(0); // TODO
-}
-
-#[derive(Debug, Default)]
-pub struct PersistentState {
-    current_term: TermId,
-    voted_for: Option<NodeId>,
-    log: Vec<LogEntry>,
-}
-
-impl PersistentState {
-    fn get_log_state(&self) -> Option<LogState> {
-        self.log
-            .last()
-            .map(|log| LogState::new(log.log_state.term, self.log.len() - 1))
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct VolatileServerState {
-    commit_index: usize,
-    last_applied: usize,
-}
-
 // A single Raft peer.
 pub struct Raft {
+    /// for RPC calls
     remote_task_sender: mpsc::Sender<RemoteTask>,
     local_task_sender: mpsc::Sender<LocalTask>,
-    handle: Option<std::thread::JoinHandle<()>>,
-    runtime: Runtime,
-}
-
-impl Raft {
-    pub(crate) async fn add_entry<M>(&self, command: &M) -> Result<(u64, u64)>
-    where
-        M: labcodec::Message,
-    {
-        let mut buffer = Vec::new();
-        command.encode(&mut buffer).map_err(|e| Error::Encode(e))?;
-        pass_message(&self.local_task_sender, |sender| LocalTask::AppendEntries {
-            data: buffer,
-            sender,
-        })
-        .await
-        .map_err(Error::Rpc)
-        .and_then(|result| result.ok_or(Error::NotLeader))
-    }
+    thread_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for Raft {
     fn drop(&mut self) {
-        if let Some(handle) = self.handle.take() {
+        if let Some(handle) = self.thread_handle.take() {
             handle.join().unwrap()
         }
     }
@@ -145,36 +99,38 @@ impl Raft {
         persister: Box<dyn Persister>,
         apply_ch: futures::channel::mpsc::UnboundedSender<ApplyMsg>,
     ) -> Raft {
+        tracing_subscriber::fmt::try_init().unwrap();
+
         let raft_state = persister.raft_state();
 
         // Your initialization code here (2A, 2B, 2C).
         let (remote_task_sender, remote_task_receiver) = mpsc::channel(Self::BUFFER_SIZE);
         let (local_task_sender, local_task_receiver) = mpsc::channel(Self::BUFFER_SIZE);
 
-        let mut raft_inner = RaftInner::new(
-            Some(Role::default()),
-            Handle::new(
-                node_id,
-                persister,
-                Election::default(),
-                Logs::default(),
-                apply_ch,
-                peers,
-                remote_task_receiver,
-                local_task_receiver,
-            ),
-        );
-
         let raft_runtime = Runtime::new().unwrap();
         let handle = std::thread::spawn(move || {
+            let mut raft_inner = RaftInner::new(
+                Some(Role::default()),
+                Handle::new(
+                    node_id,
+                    persister,
+                    Election::default(),
+                    Logs::default(),
+                    apply_ch,
+                    peers,
+                    remote_task_receiver,
+                    local_task_receiver,
+                    Box::new(thread_rng()),
+                    Config::default(),
+                ),
+            );
             raft_runtime.block_on(raft_inner.raft_main());
         });
 
         let mut raft = Raft {
             remote_task_sender,
             local_task_sender,
-            handle: Some(handle),
-            runtime: Runtime::new().unwrap(),
+            thread_handle: Some(handle),
         };
 
         // initialize from state persisted before a crash
@@ -272,29 +228,26 @@ impl Node {
     where
         M: labcodec::Message,
     {
-        self.raft.runtime.block_on(self.raft.add_entry(command))
+        let mut buffer = Vec::new();
+        command.encode(&mut buffer).map_err(|e| Error::Encode(e))?;
+        blocking_pass_message(&self.raft.local_task_sender, |sender| {
+            LocalTask::AppendEntries {
+                data: buffer,
+                sender,
+            }
+        })
+        .map_err(Error::Rpc)
+        .and_then(|result| result.ok_or(Error::NotLeader))
     }
 
     /// The current term of this peer.
     pub fn term(&self) -> u64 {
-        self.raft
-            .runtime
-            .block_on(pass_message(
-                &self.raft.local_task_sender,
-                LocalTask::GetTerm,
-            ))
-            .unwrap()
+        blocking_pass_message(&self.raft.local_task_sender, LocalTask::GetTerm).unwrap()
     }
 
     /// Whether this peer believes it is the leader.
     pub fn is_leader(&self) -> bool {
-        self.raft
-            .runtime
-            .block_on(pass_message(
-                &self.raft.local_task_sender,
-                LocalTask::CheckLeader,
-            ))
-            .unwrap()
+        blocking_pass_message(&self.raft.local_task_sender, LocalTask::CheckLeader).unwrap()
     }
 
     /// The current state of this peer.
@@ -315,6 +268,7 @@ impl Node {
     /// threads you generated with this Raft Node.
     pub fn kill(&self) {
         // Your code here, if desired.
+        blocking_pass_message(&self.raft.local_task_sender, LocalTask::Shutdown).unwrap()
     }
 
     /// A service wants to switch to snapshot.  
@@ -366,61 +320,33 @@ impl RaftService for Node {
     }
 }
 
+/// if we have algebraic effects we can unify
+///`blocking_pass_message` and `pass_message`
+fn blocking_pass_message<F, R, M>(
+    message_sender: &mpsc::Sender<M>,
+    message_constructor: F,
+) -> labrpc::Result<R>
+where
+    F: FnOnce(oneshot::Sender<R>) -> M,
+{
+    let (sender, receiver) = oneshot::channel();
+    message_sender
+        .blocking_send(message_constructor(sender))
+        .map_err(|_| Other(String::from("sender error")))?;
+    receiver.blocking_recv().map_err(|_| Recv(Canceled))
+}
+
 async fn pass_message<F, R, M>(
     message_sender: &mpsc::Sender<M>,
     message_constructor: F,
 ) -> labrpc::Result<R>
 where
-    F: FnOnce(tokio::sync::oneshot::Sender<R>) -> M,
+    F: FnOnce(oneshot::Sender<R>) -> M,
 {
-    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let (sender, receiver) = oneshot::channel();
     message_sender
         .send(message_constructor(sender))
         .map_err(|_| Other(String::from("sender error")))
         .await?;
     receiver.await.map_err(|_| Recv(Canceled))
-}
-
-///a task is legal iff the term is larger than the current term
-pub struct LegalTask(RemoteTask);
-
-impl LegalTask {
-    pub fn get_term(&self) -> TermId {
-        self.0.get_term()
-    }
-
-    pub fn validate(current_term: TermId) -> impl FnOnce(RemoteTask) -> Option<LegalTask> {
-        move |task| {
-            if task.get_term() > current_term {
-                Some(LegalTask(task))
-            } else {
-                None
-            }
-        }
-    }
-
-    pub async fn handle(self, role: Role, handle: &mut Handle) -> Role {
-        match self.0 {
-            RemoteTask::RequestVote { args, sender } => {
-                let (reply, new_role) = role.request_vote(handle, &args);
-                sender.send(reply).unwrap();
-                new_role
-            }
-            RemoteTask::AppendEntries { args, sender } => {
-                let (reply, new_role) = role.append_entries(handle, args).await;
-                sender.send(reply).unwrap();
-                new_role
-            }
-        }
-    }
-}
-
-pub async fn receive_task(
-    receiver: &mut mpsc::Receiver<RemoteTask>,
-    current_term: TermId,
-) -> Option<LegalTask> {
-    receiver
-        .recv()
-        .map(|option| option.and_then(LegalTask::validate(current_term)))
-        .await
 }

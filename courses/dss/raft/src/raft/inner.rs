@@ -2,16 +2,31 @@ use crate::proto::raftpb::raft::Client as RaftClient;
 use crate::proto::raftpb::{
     AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply,
 };
-use crate::raft::leader::{LogEntry, LogKind, LogState};
+use std::fmt::{Debug, Formatter};
+use std::ops::Range;
+
 use crate::raft::persister::Persister;
 use crate::raft::role::Role;
 use crate::raft::{ApplyMsg, NodeId, TermId};
 use futures::channel::mpsc::UnboundedSender;
 use futures::SinkExt;
-use std::cmp::{max, min};
+use num::integer::div_ceil;
+use rand::RngCore;
 
 use crate::raft::logs::Logs;
 use tokio::sync::{mpsc, oneshot};
+use tracing::{debug, instrument};
+
+pub struct Config {
+    pub heartbeat_failure_random_range: Range<u64>,
+    pub election_timeout: u64,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        todo!()
+    }
+}
 
 pub struct RaftInner {
     role: Option<Role>,
@@ -30,7 +45,7 @@ impl RaftInner {
     pub async fn raft_main(&mut self) {
         loop {
             let role = self.role.take().unwrap();
-            let new_role = role.transit(&mut self.handle).await;
+            let new_role = role.progress(&mut self.handle).await;
             self.role = Some(new_role);
         }
     }
@@ -45,6 +60,18 @@ pub struct Handle {
     pub peers: Vec<RaftClient>, // RPC end points of all peers
     pub remote_task_receiver: mpsc::Receiver<RemoteTask>,
     pub local_task_receiver: mpsc::Receiver<LocalTask>,
+    pub random_generator: Box<dyn RngCore>,
+    pub config: Config,
+}
+
+impl Debug for Handle {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Handle")
+            .field("node_id", &self.node_id)
+            .field("election", &self.election)
+            .field("logs", &self.logs)
+            .finish()
+    }
 }
 
 impl Handle {
@@ -57,6 +84,8 @@ impl Handle {
         peers: Vec<RaftClient>,
         remote_task_receiver: mpsc::Receiver<RemoteTask>,
         local_task_receiver: mpsc::Receiver<LocalTask>,
+        random_generator: Box<dyn RngCore>,
+        config: Config,
     ) -> Self {
         Self {
             node_id,
@@ -67,6 +96,8 @@ impl Handle {
             peers,
             remote_task_receiver,
             local_task_receiver,
+            random_generator,
+            config,
         }
     }
 
@@ -77,14 +108,21 @@ impl Handle {
 
     /// In the Raft paper, there is `lastApplied` field.
     /// But here, we don't don't make the execution of this function a transaction.
+    #[instrument(skip_all)]
     pub async fn apply_messages<I, M>(apply_ch: &mut UnboundedSender<ApplyMsg>, messages: I)
     where
         I: Iterator<Item = M>,
         M: Into<ApplyMsg>,
     {
         for entry in messages {
-            apply_ch.send(entry.into()).await.unwrap();
+            let apply_msg = entry.into();
+            debug!(?apply_msg);
+            apply_ch.send(apply_msg).await.unwrap();
         }
+    }
+
+    pub fn get_majority_threshold(&self) -> usize {
+        div_ceil(self.peers.len() + 1, 2)
     }
 }
 
@@ -106,6 +144,29 @@ impl RemoteTask {
             RemoteTask::AppendEntries { args, sender: _ } => args.term,
         }
     }
+
+    pub async fn handle(self, role: Role, handle: &mut Handle) -> Role {
+        match self {
+            RemoteTask::RequestVote { args, sender } => {
+                let (reply, new_role) = role.request_vote(handle, &args);
+                sender.send(reply).unwrap();
+                new_role
+            }
+            RemoteTask::AppendEntries { args, sender } => {
+                let (reply, new_role) = role.append_entries(handle, args).await;
+                sender.send(reply).unwrap();
+                new_role
+            }
+        }
+    }
+
+    pub fn may_interrupt_election(self, current_term: TermId) -> Option<RemoteTask> {
+        if self.get_term() > current_term {
+            Some(self)
+        } else {
+            None
+        }
+    }
 }
 
 pub enum LocalTask {
@@ -115,6 +176,7 @@ pub enum LocalTask {
     },
     GetTerm(oneshot::Sender<TermId>),
     CheckLeader(oneshot::Sender<bool>),
+    Shutdown(oneshot::Sender<()>),
 }
 
 #[derive(Default, Debug)]
@@ -129,7 +191,7 @@ impl Election {
     }
 
     pub fn update_current_term(&mut self, current_term: TermId) {
-        assert!(current_term > self.current_term);
+        assert!(current_term >= self.current_term);
         self.current_term = current_term;
     }
 
