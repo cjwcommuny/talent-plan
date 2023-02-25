@@ -18,6 +18,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, instrument};
 
 pub struct Config {
+    pub heartbeat_cycle: u64,
     pub heartbeat_failure_random_range: Range<u64>,
     pub election_timeout: u64,
 }
@@ -157,14 +158,6 @@ impl RemoteTask {
                 sender.send(reply).unwrap();
                 new_role
             }
-        }
-    }
-
-    pub fn may_interrupt_election(self, current_term: TermId) -> Option<RemoteTask> {
-        if self.get_term() > current_term {
-            Some(self)
-        } else {
-            None
         }
     }
 }

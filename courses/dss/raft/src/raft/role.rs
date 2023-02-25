@@ -1,7 +1,7 @@
 use rand::Rng;
 use std::time::Duration;
 use tokio::select;
-use tokio::time::{sleep_until, Instant};
+use tokio::time::sleep;
 use tracing::{debug, error, instrument};
 
 use crate::proto::raftpb::{
@@ -10,6 +10,7 @@ use crate::proto::raftpb::{
 use crate::raft::candidate::Candidate;
 use crate::raft::inner::{Handle, LocalTask};
 use crate::raft::leader::{Leader, LogEntry, LogState};
+use crate::raft::NodeId;
 
 #[derive(Debug)]
 pub enum Role {
@@ -83,6 +84,7 @@ impl Role {
             };
             (reply, self)
         } else {
+            handle.election.voted_for = Some(args.leader_id as NodeId);
             let remote_log_state: Option<LogState> = args.log_state.map(Into::into);
             let local_log_state = remote_log_state.and_then(|remote_state| {
                 handle
@@ -130,18 +132,12 @@ pub struct Follower;
 impl Follower {
     #[instrument(ret)]
     pub async fn progress(self, handle: &mut Handle) -> Role {
-        let failure_timer = sleep_until(
-            Instant::now()
-                + Duration::from_millis(
-                    handle
-                        .random_generator
-                        .gen_range(handle.config.heartbeat_failure_random_range.clone()),
-                ),
-        );
+        let failure_timer =
+            sleep(Duration::from_millis(handle.random_generator.gen_range(
+                handle.config.heartbeat_failure_random_range.clone(),
+            )));
         select! {
-            _ = failure_timer => {
-                Role::Candidate(Candidate)
-            }
+            _ = failure_timer => Role::Candidate(Candidate),
             Some(task) = handle.local_task_receiver.recv() => {
                 if let None = match task {
                     LocalTask::AppendEntries { sender, .. } => sender.send(None).ok(), // not leader

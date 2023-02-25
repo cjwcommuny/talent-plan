@@ -8,8 +8,10 @@ use futures::{stream::FuturesUnordered, StreamExt};
 use std::future::Future;
 
 use std::time::Duration;
+
 use tokio::select;
 use tokio::time::interval;
+use tracing::{error, instrument};
 
 /// inner structure for `ApplyMsg`
 #[derive(Debug, Clone)]
@@ -21,65 +23,55 @@ pub enum LogKind {
 /// It's impossible that there exists multiple leaders with the same term.
 #[derive(Debug)]
 pub struct Leader {
-    state: VolatileLeaderState,
-}
-
-#[derive(Debug)]
-pub struct VolatileLeaderState {
     next_index: Vec<usize>, // for each server, index of the next log entry to send to that server
     /// different from the Raft paper, `match_length = match_index + 1`
     match_length: Vec<usize>,
 }
 
-impl VolatileLeaderState {
+impl Leader {
     pub fn new(log_length: usize, num_servers: usize) -> Self {
-        VolatileLeaderState {
+        Leader {
             next_index: vec![log_length; num_servers],
             match_length: vec![0; num_servers],
         }
     }
-}
 
-impl Leader {
-    pub fn new(state: VolatileLeaderState) -> Self {
-        Leader { state }
-    }
-
+    #[instrument]
     pub(crate) async fn progress(mut self, handle: &mut Handle) -> Role {
         let mut rpc_replies: FuturesUnordered<_> = handle
             .get_node_ids_except_mine()
             .map(replicate_log(&self, handle))
             .collect();
-        let mut heartbeat_timer = interval(Duration::from_millis(100));
-        // TODO: move to config
-        loop {
+        let mut heartbeat_timer = interval(Duration::from_millis(handle.config.heartbeat_cycle));
+        let new_role: Role = loop {
             let current_term = handle.election.get_current_term();
             select! {
-                _ = heartbeat_timer.tick() => {
-                    rpc_replies.extend(handle.get_node_ids_except_mine().map(check_heartbeat(&self, handle)))
-                }
+                _ = heartbeat_timer.tick() => rpc_replies
+                    .extend(handle.get_node_ids_except_mine().map(check_heartbeat(&self, handle))),
                 Some(result) = rpc_replies.next() => {
-                    let reply: AppendEntriesReply = result.unwrap(); // TODO: add logging
-                    match self.on_receive_append_entries_reply(reply, current_term) {
-                        AppendEntriesResult::Commit{ follower_id, match_length } => {
-                            self.state.next_index[follower_id] = match_length;
-                            self.state.match_length[follower_id] = match_length;
-                            try_commit_logs(&self, handle).await
-                        }
-                        AppendEntriesResult::Retry(node_id) => {
-                            // TODO: independent retry strategy
-                            // if `self.state.next_index[node_id] == 0`, the follower is out of date
-                            // we still need to retry
-                            if self.state.next_index[node_id] > 0 {
-                                self.state.next_index[node_id] -= 1;
+                    match result {
+                        Ok(reply) => {
+                            match self.on_receive_append_entries_reply(reply, current_term) {
+                                AppendEntriesResult::Commit{ follower_id, match_length } => {
+                                    self.next_index[follower_id] = match_length;
+                                    self.match_length[follower_id] = match_length;
+                                    try_commit_logs(&self, handle).await
+                                }
+                                AppendEntriesResult::Retry(node_id) => {
+                                    // TODO: independent retry strategy
+                                    // if `self.state.next_index[node_id] == 0`, the follower is out of date
+                                    // we still need to retry
+                                    self.next_index[node_id] = self.next_index[node_id].saturating_sub(1);
+                                    let future = replicate_log(&self, handle)(node_id);
+                                    rpc_replies.push(future);
+                                }
+                                AppendEntriesResult::FoundLargerTerm(new_term) => {
+                                    handle.election.update_current_term(new_term);
+                                    break Role::Follower(Follower::default())
+                                }
                             }
-                            let future = replicate_log(&self, handle)(node_id);
-                            rpc_replies.push(future);
                         }
-                        AppendEntriesResult::FoundLargerTerm(new_term) => {
-                            handle.election.update_current_term(new_term);
-                            return Role::Follower(Follower::default());
-                        }
+                        Err(e) => error!(rpc_error = e.to_string()),
                     }
                 }
                 Some(task) = handle.local_task_receiver.recv() => {
@@ -87,7 +79,7 @@ impl Leader {
                         LocalTask::AppendEntries { data, sender } => {
                             let current_term = handle.election.get_current_term();
                             let index = handle.logs.add_log(LogKind::Command, data, current_term);
-                            self.state.match_length[handle.node_id] = index + 1;
+                            self.match_length[handle.node_id] = index + 1;
                             sender.send(Some((index as u64, current_term))).unwrap();
                             rpc_replies.extend(handle.get_node_ids_except_mine().map(replicate_log(&self, handle)));
                         }
@@ -97,15 +89,16 @@ impl Leader {
                     }
                 }
                 Some(task) = handle.remote_task_receiver.recv() => {
-                    let new_role = task.handle(Role::Leader(self), handle).await; // FIXME
+                    let new_role = task.handle(Role::Leader(self), handle).await;
                     if let Role::Leader(new_role) = new_role {
                         self = new_role;
                     } else {
-                        return new_role;
+                        break new_role
                     }
                 }
             }
-        }
+        };
+        new_role
     }
 
     fn on_receive_append_entries_reply(
@@ -118,7 +111,7 @@ impl Leader {
             FoundLargerTerm(reply.term)
         } else if reply.term == current_term && let Some(match_length) = reply.match_length {
             let match_length = match_length as usize;
-            assert!(match_length > self.state.match_length[follower_id]);
+            assert!(match_length > self.match_length[follower_id]);
             Commit {
                 follower_id,
                 match_length,
@@ -147,7 +140,6 @@ async fn try_commit_logs(leader: &Leader, handle: &mut Handle) {
     let commit_threshold = handle.get_majority_threshold();
     let compute_acks = |length_threshold| {
         leader
-            .state
             .match_length
             .iter()
             .filter(|match_length| **match_length > length_threshold)
@@ -171,7 +163,7 @@ fn send_append_entries(
     node_id: NodeId,
     entries: Vec<LogEntryProst>,
 ) -> ReplicateLogFuture {
-    let log_length = leader.state.next_index[node_id];
+    let log_length = leader.next_index[node_id];
     let log_state = handle.logs.get_log_state_front(log_length).map(Into::into);
     let args = AppendEntriesArgs {
         term: handle.election.get_current_term(),
@@ -188,7 +180,7 @@ fn replicate_log<'a>(
     handle: &'a Handle,
 ) -> impl Fn(NodeId) -> ReplicateLogFuture + 'a {
     move |node_id| {
-        let log_length = leader.state.next_index[node_id];
+        let log_length = leader.next_index[node_id];
         let entries: Vec<LogEntryProst> = handle
             .logs
             .get_tail(log_length)
