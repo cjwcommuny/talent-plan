@@ -1,7 +1,7 @@
 use crate::raft::leader::{LogEntry, LogKind, LogState};
 use crate::raft::TermId;
 use std::cmp::min;
-use tracing::instrument;
+use tracing::{instrument};
 
 /// `commit_length` split the logs to the two sections:
 ///
@@ -69,9 +69,8 @@ impl Logs {
     }
 
     /// returns the logs just committed
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(logs_len = self.logs.len()))]
     pub fn commit_logs(&mut self, new_commit_length: usize) -> impl Iterator<Item = &LogEntry> {
-        debug!("logs.len(): {}", self.logs.len());
         assert!(new_commit_length <= self.logs.len());
         let newly_committed = self.logs[self.commit_length..new_commit_length].iter();
         // `self.commit_length` can be incremented only

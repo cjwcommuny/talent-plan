@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use tokio::select;
 use tokio::time::interval;
-use tracing::{error, instrument};
+use tracing::{error, instrument, debug};
 
 /// inner structure for `ApplyMsg`
 #[derive(Debug, Clone)]
@@ -37,7 +37,7 @@ impl Leader {
         }
     }
 
-    #[instrument]
+    #[instrument(skip_all, fields(node_id = handle.node_id))]
     pub(crate) async fn progress(mut self, handle: &mut Handle) -> Role {
         let mut rpc_replies: FuturesUnordered<_> = handle
             .get_node_ids_except_mine()
@@ -138,6 +138,7 @@ enum AppendEntriesResult {
     Retry(NodeId),
 }
 
+#[instrument]
 async fn try_commit_logs(leader: &Leader, handle: &mut Handle) {
     let commit_threshold = handle.get_majority_threshold();
     let compute_acks = |length_threshold| {
@@ -151,8 +152,8 @@ async fn try_commit_logs(leader: &Leader, handle: &mut Handle) {
     let ready = (0..handle.logs.get_log_len())
         .find(|match_length| compute_acks(*match_length) < commit_threshold)
         .unwrap_or(handle.logs.get_log_len())
-        .checked_sub(1)
-        .unwrap();
+        .saturating_sub(1);
+    debug!(ready);
     let messages = handle.logs.commit_logs(ready).map(Clone::clone);
     Handle::apply_messages(&mut handle.apply_ch, messages).await
 }

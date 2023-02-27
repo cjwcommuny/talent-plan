@@ -17,7 +17,7 @@ use tracing::{error, instrument};
 pub struct Candidate;
 
 impl Candidate {
-    #[instrument(ret)]
+    #[instrument(skip_all, ret, fields(node_id = handle.node_id))]
     pub(crate) async fn progress(self, handle: &mut Handle) -> Role {
         handle.election.increment_term();
         handle.election.voted_for = Some(handle.node_id);

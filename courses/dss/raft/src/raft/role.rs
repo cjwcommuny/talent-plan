@@ -130,7 +130,7 @@ impl Default for Role {
 pub struct Follower;
 
 impl Follower {
-    #[instrument(ret)]
+    #[instrument(skip_all, ret, fields(node_id = handle.node_id))]
     pub async fn progress(self, handle: &mut Handle) -> Role {
         let failure_timer =
             sleep(Duration::from_millis(handle.random_generator.gen_range(

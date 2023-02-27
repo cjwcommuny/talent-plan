@@ -8,6 +8,7 @@ use futures::channel::mpsc::unbounded;
 use futures::future;
 use futures::stream::StreamExt;
 use rand::Rng;
+use tracing::Level;
 
 use crate::proto::raftpb::*;
 use crate::raft;
@@ -63,6 +64,7 @@ fn init_logger() {
                 .with_file(true)
                 .with_line_number(true),
         )
+        .with_max_level(Level::INFO)
         .init()
 }
 
