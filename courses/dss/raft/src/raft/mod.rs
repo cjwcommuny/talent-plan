@@ -99,7 +99,7 @@ impl Raft {
         persister: Box<dyn Persister>,
         apply_ch: futures::channel::mpsc::UnboundedSender<ApplyMsg>,
     ) -> Raft {
-        tracing_subscriber::fmt::try_init().unwrap();
+        info!("start Raft");
 
         let raft_state = persister.raft_state();
 
