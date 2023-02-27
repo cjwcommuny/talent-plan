@@ -36,6 +36,7 @@ impl Logs {
     }
 
     pub fn get_tail(&self, tail_begin: usize) -> impl Iterator<Item = &LogEntry> {
+        assert!(tail_begin <= self.logs.len());
         self.logs[tail_begin..].iter()
     }
 

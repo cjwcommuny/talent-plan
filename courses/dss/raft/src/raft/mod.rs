@@ -141,6 +141,7 @@ impl Raft {
     /// save Raft's persistent state to stable storage,
     /// where it can later be retrieved after a crash and restart.
     /// see paper's Figure 2 for a description of what should be persistent.
+    #[allow(dead_code)]
     fn persist(&mut self) {
         // Your code here (2C).
         // Example:
@@ -167,6 +168,7 @@ impl Raft {
         // }
     }
 
+    #[allow(dead_code)]
     fn cond_install_snapshot(
         &mut self,
         last_included_term: u64,
@@ -177,6 +179,7 @@ impl Raft {
         crate::your_code_here((last_included_term, last_included_index, snapshot));
     }
 
+    #[allow(dead_code)]
     fn snapshot(&mut self, index: u64, snapshot: &[u8]) {
         // Your code here (2D).
         crate::your_code_here((index, snapshot));
@@ -291,6 +294,7 @@ impl Node {
     /// including index. This means the service no longer needs the log through
     /// (and including) that index. Raft should now trim its log as much as
     /// possible.
+    #[allow(dead_code)]
     pub fn snapshot(&self, index: u64, snapshot: &[u8]) {
         // Your code here.
         // Example:

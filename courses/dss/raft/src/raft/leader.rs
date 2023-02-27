@@ -4,6 +4,7 @@ use crate::raft::inner::{Handle, LocalTask};
 use crate::raft::leader::AppendEntriesResult::{Commit, FoundLargerTerm, Retry};
 use crate::raft::role::{Follower, Role};
 use crate::raft::{ApplyMsg, NodeId, TermId};
+use assert2::assert;
 use futures::{stream::FuturesUnordered, StreamExt};
 use std::future::Future;
 
@@ -47,7 +48,7 @@ impl Leader {
             let current_term = handle.election.get_current_term();
             select! {
                 _ = heartbeat_timer.tick() => rpc_replies
-                    .extend(handle.get_node_ids_except_mine().map(check_heartbeat(&self, handle))),
+                    .extend(handle.get_node_ids_except_mine().map(replicate_log(&self, handle))),
                 Some(result) = rpc_replies.next() => {
                     match result {
                         Ok(reply) => {
@@ -62,8 +63,7 @@ impl Leader {
                                     // if `self.state.next_index[node_id] == 0`, the follower is out of date
                                     // we still need to retry
                                     self.next_index[node_id] = self.next_index[node_id].saturating_sub(1);
-                                    let future = replicate_log(&self, handle)(node_id);
-                                    rpc_replies.push(future);
+                                    rpc_replies.push(replicate_log(&self, handle)(node_id));
                                 }
                                 AppendEntriesResult::FoundLargerTerm(new_term) => {
                                     handle.election.update_current_term(new_term);
@@ -101,6 +101,7 @@ impl Leader {
         new_role
     }
 
+    #[instrument(ret)]
     fn on_receive_append_entries_reply(
         &mut self,
         reply: AppendEntriesReply,
@@ -111,7 +112,7 @@ impl Leader {
             FoundLargerTerm(reply.term)
         } else if reply.term == current_term && let Some(match_length) = reply.match_length {
             let match_length = match_length as usize;
-            assert!(match_length > self.match_length[follower_id]);
+            assert!(match_length >= self.match_length[follower_id]);
             Commit {
                 follower_id,
                 match_length,
@@ -122,6 +123,7 @@ impl Leader {
     }
 }
 
+#[derive(Debug)]
 enum AppendEntriesResult {
     FoundLargerTerm(TermId),
     Commit {
@@ -189,13 +191,6 @@ fn replicate_log<'a>(
             .collect();
         send_append_entries(leader, handle, node_id, entries)
     }
-}
-
-fn check_heartbeat<'a>(
-    leader: &'a Leader,
-    handle: &'a Handle,
-) -> impl Fn(NodeId) -> ReplicateLogFuture + 'a {
-    move |node_id| send_append_entries(leader, handle, node_id, Vec::new())
 }
 
 #[derive(Debug, Clone)]

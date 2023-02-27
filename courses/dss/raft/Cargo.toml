@@ -24,6 +24,7 @@ tracing = { version = "0.1", features = ["attributes"] }
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 num = "0.4"
 either = "1.6"
+assert2 = "0.3"
 
 labcodec = { path = "../labcodec" }
 labrpc = { path = "../labrpc" }

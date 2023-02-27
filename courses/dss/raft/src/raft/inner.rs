@@ -8,6 +8,7 @@ use std::ops::Range;
 use crate::raft::persister::Persister;
 use crate::raft::role::Role;
 use crate::raft::{ApplyMsg, NodeId, TermId};
+use assert2::assert;
 use futures::channel::mpsc::UnboundedSender;
 use futures::SinkExt;
 use num::integer::div_ceil;
@@ -25,7 +26,11 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        todo!()
+        Config {
+            heartbeat_cycle: 300,
+            heartbeat_failure_random_range: 150..300,
+            election_timeout: 300,
+        }
     }
 }
 
@@ -37,10 +42,6 @@ pub struct RaftInner {
 impl RaftInner {
     pub fn new(role: Option<Role>, handle: Handle) -> Self {
         Self { role, handle }
-    }
-
-    fn append_entries(&mut self, _args: &AppendEntriesArgs) -> AppendEntriesReply {
-        todo!()
     }
 
     pub async fn raft_main(&mut self) {
@@ -139,13 +140,6 @@ pub enum RemoteTask {
 }
 
 impl RemoteTask {
-    pub fn get_term(&self) -> TermId {
-        match self {
-            RemoteTask::RequestVote { args, sender: _ } => args.term,
-            RemoteTask::AppendEntries { args, sender: _ } => args.term,
-        }
-    }
-
     pub async fn handle(self, role: Role, handle: &mut Handle) -> Role {
         match self {
             RemoteTask::RequestVote { args, sender } => {
