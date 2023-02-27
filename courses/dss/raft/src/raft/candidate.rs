@@ -3,7 +3,7 @@ use crate::raft::errors::{Error, Result};
 use crate::raft::inner::{Handle, LocalTask};
 use crate::raft::leader::Leader;
 use crate::raft::role::{Follower, Role};
-use crate::raft::TermId;
+use crate::raft::{NodeId, TermId};
 use futures::{stream, stream::FuturesUnordered, FutureExt, Stream, StreamExt};
 use std::collections::HashSet;
 use std::fmt::Debug;
@@ -17,7 +17,7 @@ use tracing::{error, instrument};
 pub struct Candidate;
 
 impl Candidate {
-    #[instrument(skip_all, ret, fields(node_id = handle.node_id))]
+    #[instrument(name = "Candidate::progress", skip_all, ret, fields(node_id = handle.node_id))]
     pub(crate) async fn progress(self, handle: &mut Handle) -> Role {
         handle.election.increment_term();
         handle.election.voted_for = Some(handle.node_id);
@@ -40,6 +40,7 @@ impl Candidate {
             };
 
             stream::once(collect_vote(
+                handle.node_id,
                 replies,
                 handle.get_majority_threshold(),
                 handle.election.get_current_term(),
@@ -81,19 +82,21 @@ impl Candidate {
     }
 }
 
+#[derive(Debug)]
 enum VoteResult {
     Elected,
     Lost, // all peers reply but none of the reply is legal
     FoundLargerTerm(TermId),
 }
 
-#[instrument]
+#[instrument(skip(replies), ret)]
 async fn collect_vote(
+    node_id: NodeId,
     mut replies: impl Stream<Item = Result<RequestVoteReply>> + Unpin + Debug,
     electoral_threshold: usize,
     current_term: TermId,
 ) -> VoteResult {
-    let mut votes_received = HashSet::new();
+    let mut votes_received = HashSet::from([node_id as u32]);
     while let Some(reply) = replies
         .next()
         .await

@@ -61,11 +61,13 @@ fn test_reelection_2a() {
     let leader1 = cfg.check_one_leader();
     // if the leader disconnects, a new one should be elected.
     cfg.disconnect(leader1);
+    info!("disconnect");
     cfg.check_one_leader();
 
     // if the old leader rejoins, that shouldn't
     // disturb the new leader.
     cfg.connect(leader1);
+    info!("connect");
     let leader2 = cfg.check_one_leader();
 
     // if there's no quorum, no leader should

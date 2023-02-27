@@ -37,7 +37,7 @@ impl Leader {
         }
     }
 
-    #[instrument(skip_all, fields(node_id = handle.node_id))]
+    #[instrument(name = "Leader::progress", skip_all, fields(node_id = handle.node_id))]
     pub(crate) async fn progress(mut self, handle: &mut Handle) -> Role {
         let mut rpc_replies: FuturesUnordered<_> = handle
             .get_node_ids_except_mine()
