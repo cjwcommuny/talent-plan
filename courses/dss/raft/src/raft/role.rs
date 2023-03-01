@@ -51,7 +51,7 @@ impl Role {
                     && (voted_for.is_none() || voted_for == Some(args.candidate_id as usize)))
         };
         if log_ok && term_ok {
-            handle.election.update_current_term(args.term);
+            handle.election.update_current_term(args.term); // FIXME: move this line out of the conditional block
             handle.election.voted_for = Some(args.candidate_id as usize);
             let response = RequestVoteReply {
                 term: handle.election.get_current_term(),
@@ -131,7 +131,7 @@ impl Default for Role {
 pub struct Follower;
 
 impl Follower {
-    #[instrument(name = "Follower::progress", skip_all, ret, fields(node_id = handle.node_id), level = "debug")]
+    #[instrument(name = "Follower::progress", skip_all, ret, fields(node_id = handle.node_id, term = handle.election.get_current_term()), level = "debug")]
     pub async fn progress(self, handle: &mut Handle) -> Role {
         let failure_timer = stream::once(sleep(Duration::from_millis(
             handle

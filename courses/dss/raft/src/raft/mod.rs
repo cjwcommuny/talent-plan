@@ -5,7 +5,6 @@ use inner::{Handle, RemoteTask};
 use labrpc::Error::{Other, Recv};
 use logs::Logs;
 use rand::thread_rng;
-use std::panic::resume_unwind;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};
@@ -82,9 +81,10 @@ impl Drop for Raft {
         if let Some(handle) = self.thread_handle.take() {
             handle
                 .join()
-                .map_err(|e| {
+                .map_err(|_| {
                     error!("thread panic");
-                    resume_unwind(e)
+                    println!("thread panic2")
+                    // resume_unwind(e)
                 })
                 .ok();
         }
@@ -282,9 +282,11 @@ impl Node {
     /// A.K.A all resources are reset. But we are simulating
     /// a VIRTUAL crash in tester, so take care of background
     /// threads you generated with this Raft Node.
+    #[instrument(skip_all)]
     pub fn kill(&mut self) {
         // Your code here, if desired.
-        blocking_pass_message(&self.raft.local_task_sender, LocalTask::Shutdown).unwrap();
+        blocking_pass_message(&self.raft.local_task_sender, LocalTask::Shutdown)
+            .map_err(|e| error!("{}", e.to_string())).ok();
     }
 
     /// A service wants to switch to snapshot.  

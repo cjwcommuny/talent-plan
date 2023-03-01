@@ -15,7 +15,7 @@ use tokio::time::interval;
 use tracing::{debug, error, info, instrument, span, Level};
 
 /// inner structure for `ApplyMsg`
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogKind {
     Command,
     Snapshot { term: TermId },
@@ -37,7 +37,7 @@ impl Leader {
         }
     }
 
-    #[instrument(name = "Leader::progress", skip_all, fields(node_id = handle.node_id), level = "debug")]
+    #[instrument(name = "Leader::progress", skip_all, fields(node_id = handle.node_id, term = handle.election.get_current_term()), level = "debug")]
     pub(crate) async fn progress(mut self, handle: &mut Handle) -> Role {
         let mut rpc_replies: FuturesUnordered<_> = handle
             .get_node_ids_except_mine()
@@ -203,7 +203,7 @@ fn replicate_log<'a>(
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct LogEntry {
     log_kind: LogKind,
     data: Vec<u8>,

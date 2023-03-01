@@ -9,7 +9,6 @@ use futures::future;
 use futures::stream::StreamExt;
 use rand::Rng;
 
-
 use crate::proto::raftpb::*;
 use crate::raft;
 use crate::raft::persister::*;
@@ -64,8 +63,9 @@ fn init_logger() {
                 .with_file(true)
                 .with_line_number(true),
         )
-        // .with_max_level(Level::WARN)
         .with_env_filter("raft=debug")
+        .with_ansi(false)
+        .pretty()
         .init()
 }
 

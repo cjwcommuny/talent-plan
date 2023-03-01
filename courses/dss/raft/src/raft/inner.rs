@@ -15,7 +15,7 @@ use rand::RngCore;
 
 use crate::raft::logs::Logs;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{instrument};
+use tracing::instrument;
 
 pub struct Config {
     pub heartbeat_cycle: u64,

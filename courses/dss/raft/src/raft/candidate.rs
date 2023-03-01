@@ -18,7 +18,7 @@ use tracing::{error, instrument};
 pub struct Candidate;
 
 impl Candidate {
-    #[instrument(name = "Candidate::progress", skip_all, ret, fields(node_id = handle.node_id), level = "debug")]
+    #[instrument(name = "Candidate::progress", skip_all, ret, fields(node_id = handle.node_id, term = handle.election.get_current_term()), level = "debug")]
     pub(crate) async fn progress(self, handle: &mut Handle) -> Role {
         handle.election.increment_term();
         handle.election.voted_for = Some(handle.node_id);
@@ -104,19 +104,25 @@ async fn collect_vote(
     let mut votes_received = HashSet::from([node_id as u32]);
     while let Some(reply) = replies
         .next()
-        .await
-        .and_then(|r: Result<RequestVoteReply>| {
-            r.inspect_err(|e| error!(reply_error = e.to_string())).ok()
-        })
+        .await && votes_received.len() < electoral_threshold
     {
-        if reply.term == current_term && reply.vote_granted {
-            votes_received.insert(reply.node_id);
-            if votes_received.len() >= electoral_threshold {
-                return VoteResult::Elected;
+        match reply {
+            Ok(reply) => {
+                if reply.term == current_term && reply.vote_granted {
+                    votes_received.insert(reply.node_id);
+                } else if reply.term > current_term {
+                    return VoteResult::FoundLargerTerm(reply.term);
+                } else {
+                    debug!("received outdated votes, current_term: {}, reply.term: {}", current_term, reply.term);
+                }
             }
-        } else if reply.term > current_term {
-            return VoteResult::FoundLargerTerm(reply.term);
+            Err(e) => error!("{}", e.to_string())
         }
     }
-    return VoteResult::Lost;
+    if votes_received.len() >= electoral_threshold {
+        VoteResult::Elected
+    } else {
+        debug!("electoral_threshold: {}, votes_received: {}", electoral_threshold, votes_received.len());
+        VoteResult::Lost
+    }
 }
