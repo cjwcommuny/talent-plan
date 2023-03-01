@@ -8,6 +8,7 @@ use rand::thread_rng;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};
+use tracing::{error, instrument};
 
 mod candidate;
 mod common;
@@ -75,10 +76,11 @@ pub struct Raft {
 }
 
 impl Drop for Raft {
+    #[instrument(skip_all)]
     fn drop(&mut self) {
-        if let Some(handle) = self.thread_handle.take() {
-            handle.join().unwrap()
-        }
+        // if let Some(handle) = self.thread_handle.take() {
+        //     handle.join().inspect_err(|_| error!("handle join error")).ok();
+        // }
     }
 }
 
@@ -99,7 +101,7 @@ impl Raft {
         persister: Box<dyn Persister>,
         apply_ch: futures::channel::mpsc::UnboundedSender<ApplyMsg>,
     ) -> Raft {
-        info!("start Raft");
+        info!("start Raft {node_id}");
 
         let raft_state = persister.raft_state();
 
@@ -239,18 +241,22 @@ impl Node {
                 sender,
             }
         })
+        // The test code uses indices starting from 1, while the implementation uses indices starting from 0.
+        .map(|option_tuple| option_tuple.map(|(index, term)| (index + 1, term)))
         .map_err(Error::Rpc)
         .and_then(|result| result.ok_or(Error::NotLeader))
     }
 
     /// The current term of this peer.
     pub fn term(&self) -> u64 {
-        blocking_pass_message(&self.raft.local_task_sender, LocalTask::GetTerm).unwrap()
+        blocking_pass_message(&self.raft.local_task_sender, LocalTask::GetTerm)
+            .expect("get term failed")
     }
 
     /// Whether this peer believes it is the leader.
     pub fn is_leader(&self) -> bool {
-        blocking_pass_message(&self.raft.local_task_sender, LocalTask::CheckLeader).unwrap()
+        blocking_pass_message(&self.raft.local_task_sender, LocalTask::CheckLeader)
+            .expect("check is leader failed")
     }
 
     /// The current state of this peer.

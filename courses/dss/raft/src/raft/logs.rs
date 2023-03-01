@@ -1,7 +1,7 @@
 use crate::raft::leader::{LogEntry, LogKind, LogState};
 use crate::raft::TermId;
 use std::cmp::min;
-use tracing::{instrument};
+use tracing::instrument;
 
 /// `commit_length` split the logs to the two sections:
 ///

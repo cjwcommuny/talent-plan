@@ -1,3 +1,4 @@
+use futures::{pin_mut, stream, StreamExt};
 use rand::Rng;
 use std::time::Duration;
 use tokio::select;
@@ -17,6 +18,7 @@ pub enum Role {
     Follower(Follower),
     Candidate(Candidate),
     Leader(Leader),
+    Stop,
 }
 
 impl Role {
@@ -25,6 +27,7 @@ impl Role {
             Role::Follower(follower) => follower.progress(handle).await,
             Role::Candidate(candidate) => candidate.progress(handle).await,
             Role::Leader(leader) => leader.progress(handle).await,
+            Role::Stop => Role::Stop,
         }
     }
 
@@ -68,7 +71,7 @@ impl Role {
         }
     }
 
-    #[instrument(ret)]
+    #[instrument(skip(self), ret)]
     pub async fn append_entries(
         self,
         handle: &mut Handle,
@@ -131,25 +134,45 @@ pub struct Follower;
 
 impl Follower {
     #[instrument(name = "Follower::progress", skip_all, ret, fields(node_id = handle.node_id))]
-    pub async fn progress(self, handle: &mut Handle) -> Role {
-        let failure_timer =
-            sleep(Duration::from_millis(handle.random_generator.gen_range(
-                handle.config.heartbeat_failure_random_range.clone(),
-            )));
-        select! {
-            _ = failure_timer => Role::Candidate(Candidate),
-            Some(task) = handle.local_task_receiver.recv() => {
-                if let None = match task {
-                    LocalTask::AppendEntries { sender, .. } => sender.send(None).ok(), // not leader
-                    LocalTask::GetTerm(sender) => sender.send(handle.election.get_current_term()).ok(),
-                    LocalTask::CheckLeader(sender) => sender.send(false).ok(),
-                    LocalTask::Shutdown(sender) => sender.send(()).ok(), // TODO: handle shutdown
-                } {
-                    error!("local task response error");
+    pub async fn progress(mut self, handle: &mut Handle) -> Role {
+        let failure_timer = stream::once(sleep(Duration::from_millis(
+            handle
+                .random_generator
+                .gen_range(handle.config.heartbeat_failure_random_range.clone()),
+        )));
+        pin_mut!(failure_timer);
+        let new_role: Role = loop {
+            select! {
+                _ = failure_timer.next() => {
+                    debug!("failure timeout");
+                    break Role::Candidate(Candidate);
                 }
-                Role::Follower(self)
+                Some(task) = handle.local_task_receiver.recv() => {
+                    debug!("handle local task");
+                    if let None = match task {
+                        LocalTask::AppendEntries { sender, .. } => sender.send(None).ok(), // not leader
+                        LocalTask::GetTerm(sender) => sender.send(handle.election.get_current_term()).ok(),
+                        LocalTask::CheckLeader(sender) => sender.send(false).ok(),
+                        LocalTask::Shutdown(sender) => {
+                            info!("shutdown");
+                            sender.send(());
+                            break Role::Stop;
+                        }
+                    } {
+                        error!("local task response error");
+                    }
+                }
+                Some(task) = handle.remote_task_receiver.recv() => {
+                    debug!("handle remote task");
+                    let new_role = task.handle(Role::Follower(self), handle).await;
+                    if let Role::Follower(new_role) = new_role {
+                        self = new_role;
+                    } else {
+                        break new_role
+                    }
+                }
             }
-            Some(task) = handle.remote_task_receiver.recv() => task.handle(Role::Follower(self), handle).await
-        }
+        };
+        new_role
     }
 }

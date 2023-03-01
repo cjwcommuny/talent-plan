@@ -10,6 +10,7 @@ use futures::channel::oneshot;
 use futures::executor::block_on;
 use futures::future;
 use rand::{rngs::ThreadRng, Rng};
+use tracing::instrument;
 
 use crate::raft::config::{Config, Entry, Storage, SNAPSHOT_INTERVAL};
 use crate::raft::Node;
@@ -123,6 +124,7 @@ fn test_many_election_2a() {
 }
 
 #[test]
+#[instrument]
 fn test_basic_agree_2b() {
     let servers = 5;
     let mut cfg = Config::new(servers);
@@ -130,6 +132,7 @@ fn test_basic_agree_2b() {
 
     let iters = 3;
     for index in 1..=iters {
+        info!("begin round {}", index);
         let (nd, _) = cfg.n_committed(index);
         if nd > 0 {
             panic!("some have committed before start()");

@@ -62,7 +62,7 @@ fn init_logger() {
         .event_format(
             tracing_subscriber::fmt::format()
                 .with_file(true)
-                .with_line_number(true),
+                .with_line_number(true), // .pretty()
         )
         .with_max_level(Level::INFO)
         .init()
@@ -299,6 +299,7 @@ impl Config {
                     if let Some(ref rf) = &rafts[starts] {
                         match rf.start(&cmd) {
                             Ok((index1, _)) => {
+                                info!("start cmd {:?} success in node_id: {:?}", cmd, starts);
                                 index = Some(index1);
                                 break;
                             }

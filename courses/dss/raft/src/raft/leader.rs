@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use tokio::select;
 use tokio::time::interval;
-use tracing::{error, instrument, debug};
+use tracing::{debug, error, info, instrument, span, Level};
 
 /// inner structure for `ApplyMsg`
 #[derive(Debug, Clone)]
@@ -47,8 +47,11 @@ impl Leader {
         let new_role: Role = loop {
             let current_term = handle.election.get_current_term();
             select! {
-                _ = heartbeat_timer.tick() => rpc_replies
-                    .extend(handle.get_node_ids_except_mine().map(replicate_log(&self, handle))),
+                _ = heartbeat_timer.tick() => {
+                    debug!("heartbeat timeout");
+                    rpc_replies
+                        .extend(handle.get_node_ids_except_mine().map(replicate_log(&self, handle)))
+                }
                 Some(result) = rpc_replies.next() => {
                     match result {
                         Ok(reply) => {
@@ -75,6 +78,7 @@ impl Leader {
                     }
                 }
                 Some(task) = handle.local_task_receiver.recv() => {
+                    debug!("handle local task");
                     match task {
                         LocalTask::AppendEntries { data, sender } => {
                             let current_term = handle.election.get_current_term();
@@ -85,10 +89,15 @@ impl Leader {
                         }
                         LocalTask::GetTerm(sender) => sender.send(handle.election.get_current_term()).unwrap(),
                         LocalTask::CheckLeader(sender) => sender.send(true).unwrap(),
-                        LocalTask::Shutdown(sender) => sender.send(()).unwrap(),
+                        LocalTask::Shutdown(sender) => {
+                            info!("shutdown");
+                            sender.send(());
+                            break Role::Stop;
+                        }
                     }
                 }
                 Some(task) = handle.remote_task_receiver.recv() => {
+                    debug!("handle remote task");
                     let new_role = task.handle(Role::Leader(self), handle).await;
                     if let Role::Leader(new_role) = new_role {
                         self = new_role;
@@ -138,28 +147,30 @@ enum AppendEntriesResult {
     Retry(NodeId),
 }
 
-#[instrument]
+#[instrument()]
 async fn try_commit_logs(leader: &Leader, handle: &mut Handle) {
     let commit_threshold = handle.get_majority_threshold();
     let compute_acks = |length_threshold| {
-        leader
+        let acks = leader
             .match_length
             .iter()
             .filter(|match_length| **match_length > length_threshold)
-            .count()
+            .count();
+        info!(acks, length_threshold);
+        acks
     };
     // find the largest length which satisfies the commit threshold
-    let ready = (0..handle.logs.get_log_len())
+    let new_commit_length = (handle.logs.get_commit_length()..handle.logs.get_log_len())
         .find(|match_length| compute_acks(*match_length) < commit_threshold)
-        .unwrap_or(handle.logs.get_log_len())
-        .saturating_sub(1);
-    debug!(ready);
-    let messages = handle.logs.commit_logs(ready).map(Clone::clone);
+        .unwrap_or(handle.logs.get_log_len());
+    info!(new_commit_length);
+    let messages = handle.logs.commit_logs(new_commit_length).map(Clone::clone);
     Handle::apply_messages(&mut handle.apply_ch, messages).await
 }
 
 type ReplicateLogFuture = impl Future<Output = Result<AppendEntriesReply, labrpc::Error>>;
 
+#[instrument(skip(leader, handle))]
 fn send_append_entries(
     leader: &Leader,
     handle: &Handle,
@@ -178,11 +189,13 @@ fn send_append_entries(
     handle.peers[node_id].append_entries(&args)
 }
 
+#[instrument(skip_all)]
 fn replicate_log<'a>(
     leader: &'a Leader,
     handle: &'a Handle,
 ) -> impl Fn(NodeId) -> ReplicateLogFuture + 'a {
     move |node_id| {
+        let _span = span!(Level::TRACE, "replicate_log");
         let log_length = leader.next_index[node_id];
         let entries: Vec<LogEntryProst> = handle
             .logs
@@ -221,12 +234,12 @@ impl Into<ApplyMsg> for LogEntry {
         match log_kind {
             LogKind::Command => ApplyMsg::Command {
                 data,
-                index: log_state.index as u64,
+                index: log_state.index as u64 + 1, // The test code uses indices starting from 1, while the implementation uses indices starting from 0.
             },
             LogKind::Snapshot { term } => ApplyMsg::Snapshot {
                 data,
                 term,
-                index: log_state.index as u64,
+                index: log_state.index as u64 + 1,
             },
         }
     }

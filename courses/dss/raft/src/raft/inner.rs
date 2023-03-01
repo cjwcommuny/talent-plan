@@ -16,7 +16,7 @@ use rand::RngCore;
 
 use crate::raft::logs::Logs;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument};
 
 pub struct Config {
     pub heartbeat_cycle: u64,
@@ -45,8 +45,7 @@ impl RaftInner {
     }
 
     pub async fn raft_main(&mut self) {
-        loop {
-            let role = self.role.take().unwrap();
+        while let role = self.role.take().unwrap() && !matches!(role, Role::Stop) {
             let new_role = role.progress(&mut self.handle).await;
             self.role = Some(new_role);
         }
@@ -118,7 +117,7 @@ impl Handle {
     {
         for entry in messages {
             let apply_msg = entry.into();
-            debug!(?apply_msg);
+            info!(?apply_msg);
             apply_ch.send(apply_msg).await.unwrap();
         }
     }

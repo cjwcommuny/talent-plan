@@ -64,7 +64,11 @@ impl Candidate {
                         LocalTask::AppendEntries { sender, .. } => sender.send(None).unwrap(),
                         LocalTask::GetTerm(sender) => sender.send(handle.election.get_current_term()).unwrap(),
                         LocalTask::CheckLeader(sender) => sender.send(false).unwrap(),
-                        LocalTask::Shutdown(sender) => sender.send(()).unwrap(),
+                        LocalTask::Shutdown(sender) => {
+                            info!("shutdown");
+                            sender.send(());
+                            break Role::Stop;
+                        }
                     }
                 }
                 Some(vote_result) = vote_result.next() => match vote_result {
