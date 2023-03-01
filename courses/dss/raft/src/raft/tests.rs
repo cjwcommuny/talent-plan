@@ -44,7 +44,10 @@ fn test_initial_election_2a() {
     thread::sleep(2 * RAFT_ELECTION_TIMEOUT);
     let term2 = cfg.check_terms();
     if term1 != term2 {
-        warn!("warning: term changed even though there were no failures")
+        warn!(
+            "warning: term changed even though there were no failures, term1: {}, term2: {}",
+            term1, term2
+        )
     }
 
     // there should still be a leader.
@@ -132,12 +135,10 @@ fn test_basic_agree_2b() {
 
     let iters = 3;
     for index in 1..=iters {
-        info!("begin round {}", index);
         let (nd, _) = cfg.n_committed(index);
         if nd > 0 {
             panic!("some have committed before start()");
         }
-
         let xindex = cfg.one(Entry { x: index * 100 }, servers, false);
         if xindex != index {
             panic!("got index {} but expected {}", xindex, index);

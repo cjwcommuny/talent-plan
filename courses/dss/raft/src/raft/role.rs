@@ -9,6 +9,7 @@ use crate::proto::raftpb::{
     AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply,
 };
 use crate::raft::candidate::Candidate;
+use crate::raft::inner::RemoteTaskResult;
 use crate::raft::inner::{Handle, LocalTask};
 use crate::raft::leader::{Leader, LogEntry, LogState};
 use crate::raft::NodeId;
@@ -31,7 +32,7 @@ impl Role {
         }
     }
 
-    #[instrument(ret)]
+    #[instrument(ret, level = "debug")]
     pub fn request_vote(
         self,
         handle: &mut Handle,
@@ -39,7 +40,6 @@ impl Role {
     ) -> (RequestVoteReply, Role) {
         let log_ok = {
             let self_log_state = handle.logs.get_log_state();
-            debug!(?self_log_state);
             let candidate_log_state: Option<LogState> = args.log_state.map(Into::into);
             candidate_log_state >= self_log_state
         };
@@ -47,10 +47,9 @@ impl Role {
             let current_term = handle.election.get_current_term();
             let voted_for = handle.election.voted_for;
             args.term > current_term
-                || (args.term == args.term
+                || (args.term == current_term
                     && (voted_for.is_none() || voted_for == Some(args.candidate_id as usize)))
         };
-        debug!(log_ok, term_ok);
         if log_ok && term_ok {
             handle.election.update_current_term(args.term);
             handle.election.voted_for = Some(args.candidate_id as usize);
@@ -71,7 +70,7 @@ impl Role {
         }
     }
 
-    #[instrument(skip(self), ret)]
+    #[instrument(skip(self), ret, level = "debug")]
     pub async fn append_entries(
         self,
         handle: &mut Handle,
@@ -96,7 +95,6 @@ impl Role {
                     .map(|entry| entry.log_state)
             });
             let log_ok = remote_log_state == local_log_state;
-            debug!(?remote_log_state, ?local_log_state, log_ok);
             let match_length = if log_ok {
                 let new_log_begin = local_log_state.map_or(0, |state| state.index + 1);
                 let entries: Vec<LogEntry> = args.entries.into_iter().map(Into::into).collect();
@@ -133,8 +131,8 @@ impl Default for Role {
 pub struct Follower;
 
 impl Follower {
-    #[instrument(name = "Follower::progress", skip_all, ret, fields(node_id = handle.node_id))]
-    pub async fn progress(mut self, handle: &mut Handle) -> Role {
+    #[instrument(name = "Follower::progress", skip_all, ret, fields(node_id = handle.node_id), level = "debug")]
+    pub async fn progress(self, handle: &mut Handle) -> Role {
         let failure_timer = stream::once(sleep(Duration::from_millis(
             handle
                 .random_generator
@@ -144,18 +142,17 @@ impl Follower {
         let new_role: Role = loop {
             select! {
                 _ = failure_timer.next() => {
-                    debug!("failure timeout");
+                    debug!("failure timer timeout, transit to Candidate");
                     break Role::Candidate(Candidate);
                 }
                 Some(task) = handle.local_task_receiver.recv() => {
-                    debug!("handle local task");
                     if let None = match task {
                         LocalTask::AppendEntries { sender, .. } => sender.send(None).ok(), // not leader
                         LocalTask::GetTerm(sender) => sender.send(handle.election.get_current_term()).ok(),
                         LocalTask::CheckLeader(sender) => sender.send(false).ok(),
                         LocalTask::Shutdown(sender) => {
                             info!("shutdown");
-                            sender.send(());
+                            sender.send(()).unwrap();
                             break Role::Stop;
                         }
                     } {
@@ -163,12 +160,9 @@ impl Follower {
                     }
                 }
                 Some(task) = handle.remote_task_receiver.recv() => {
-                    debug!("handle remote task");
-                    let new_role = task.handle(Role::Follower(self), handle).await;
-                    if let Role::Follower(new_role) = new_role {
-                        self = new_role;
-                    } else {
-                        break new_role
+                    let RemoteTaskResult { success, new_role } = task.handle(Role::Follower(Follower), handle).await;
+                    if success {
+                        break new_role; // restart failure timer
                     }
                 }
             }

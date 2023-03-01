@@ -1,5 +1,6 @@
 use crate::proto::raftpb::{RequestVoteArgs, RequestVoteReply};
 use crate::raft::errors::{Error, Result};
+use crate::raft::inner::RemoteTaskResult;
 use crate::raft::inner::{Handle, LocalTask};
 use crate::raft::leader::Leader;
 use crate::raft::role::{Follower, Role};
@@ -17,7 +18,7 @@ use tracing::{error, instrument};
 pub struct Candidate;
 
 impl Candidate {
-    #[instrument(name = "Candidate::progress", skip_all, ret, fields(node_id = handle.node_id))]
+    #[instrument(name = "Candidate::progress", skip_all, ret, fields(node_id = handle.node_id), level = "debug")]
     pub(crate) async fn progress(self, handle: &mut Handle) -> Role {
         handle.election.increment_term();
         handle.election.voted_for = Some(handle.node_id);
@@ -54,8 +55,8 @@ impl Candidate {
             select! {
                 _ = election_timeout.next() => break Role::Candidate(Candidate),
                 Some(task) = handle.remote_task_receiver.recv() => {
-                    let new_role = task.handle(Role::Candidate(Candidate), handle).await;
-                    if !matches!(new_role, Role::Candidate(_)) {
+                    let RemoteTaskResult { success, new_role } = task.handle(Role::Candidate(Candidate), handle).await;
+                    if success {
                         break new_role;
                     }
                 }
@@ -66,7 +67,7 @@ impl Candidate {
                         LocalTask::CheckLeader(sender) => sender.send(false).unwrap(),
                         LocalTask::Shutdown(sender) => {
                             info!("shutdown");
-                            sender.send(());
+                            sender.send(()).unwrap();
                             break Role::Stop;
                         }
                     }
@@ -93,7 +94,7 @@ enum VoteResult {
     FoundLargerTerm(TermId),
 }
 
-#[instrument(skip(replies), ret)]
+#[instrument(skip(replies), ret, level = "debug")]
 async fn collect_vote(
     node_id: NodeId,
     mut replies: impl Stream<Item = Result<RequestVoteReply>> + Unpin + Debug,

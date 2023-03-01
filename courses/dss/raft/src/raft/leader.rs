@@ -1,10 +1,10 @@
 use crate::proto::raftpb::{AppendEntriesArgs, AppendEntriesReply};
 use crate::proto::raftpb::{LogEntryProst, LogStateProst};
+use crate::raft::inner::RemoteTaskResult;
 use crate::raft::inner::{Handle, LocalTask};
 use crate::raft::leader::AppendEntriesResult::{Commit, FoundLargerTerm, Retry};
 use crate::raft::role::{Follower, Role};
 use crate::raft::{ApplyMsg, NodeId, TermId};
-use assert2::assert;
 use futures::{stream::FuturesUnordered, StreamExt};
 use std::future::Future;
 
@@ -37,7 +37,7 @@ impl Leader {
         }
     }
 
-    #[instrument(name = "Leader::progress", skip_all, fields(node_id = handle.node_id))]
+    #[instrument(name = "Leader::progress", skip_all, fields(node_id = handle.node_id), level = "debug")]
     pub(crate) async fn progress(mut self, handle: &mut Handle) -> Role {
         let mut rpc_replies: FuturesUnordered<_> = handle
             .get_node_ids_except_mine()
@@ -48,7 +48,6 @@ impl Leader {
             let current_term = handle.election.get_current_term();
             select! {
                 _ = heartbeat_timer.tick() => {
-                    debug!("heartbeat timeout");
                     rpc_replies
                         .extend(handle.get_node_ids_except_mine().map(replicate_log(&self, handle)))
                 }
@@ -78,7 +77,6 @@ impl Leader {
                     }
                 }
                 Some(task) = handle.local_task_receiver.recv() => {
-                    debug!("handle local task");
                     match task {
                         LocalTask::AppendEntries { data, sender } => {
                             let current_term = handle.election.get_current_term();
@@ -91,18 +89,18 @@ impl Leader {
                         LocalTask::CheckLeader(sender) => sender.send(true).unwrap(),
                         LocalTask::Shutdown(sender) => {
                             info!("shutdown");
-                            sender.send(());
+                            sender.send(()).unwrap();
                             break Role::Stop;
                         }
                     }
                 }
                 Some(task) = handle.remote_task_receiver.recv() => {
                     debug!("handle remote task");
-                    let new_role = task.handle(Role::Leader(self), handle).await;
+                    let RemoteTaskResult { success: _, new_role } = task.handle(Role::Leader(self), handle).await;
                     if let Role::Leader(new_role) = new_role {
                         self = new_role;
                     } else {
-                        break new_role
+                        break new_role;
                     }
                 }
             }
@@ -110,7 +108,7 @@ impl Leader {
         new_role
     }
 
-    #[instrument(ret)]
+    #[instrument(ret, level = "debug")]
     fn on_receive_append_entries_reply(
         &mut self,
         reply: AppendEntriesReply,
@@ -147,7 +145,7 @@ enum AppendEntriesResult {
     Retry(NodeId),
 }
 
-#[instrument()]
+#[instrument(level = "debug")]
 async fn try_commit_logs(leader: &Leader, handle: &mut Handle) {
     let commit_threshold = handle.get_majority_threshold();
     let compute_acks = |length_threshold| {
@@ -156,21 +154,19 @@ async fn try_commit_logs(leader: &Leader, handle: &mut Handle) {
             .iter()
             .filter(|match_length| **match_length > length_threshold)
             .count();
-        info!(acks, length_threshold);
         acks
     };
     // find the largest length which satisfies the commit threshold
     let new_commit_length = (handle.logs.get_commit_length()..handle.logs.get_log_len())
         .find(|match_length| compute_acks(*match_length) < commit_threshold)
         .unwrap_or(handle.logs.get_log_len());
-    info!(new_commit_length);
     let messages = handle.logs.commit_logs(new_commit_length).map(Clone::clone);
     Handle::apply_messages(&mut handle.apply_ch, messages).await
 }
 
 type ReplicateLogFuture = impl Future<Output = Result<AppendEntriesReply, labrpc::Error>>;
 
-#[instrument(skip(leader, handle))]
+#[instrument(skip(leader, handle), level = "debug")]
 fn send_append_entries(
     leader: &Leader,
     handle: &Handle,
@@ -189,7 +185,7 @@ fn send_append_entries(
     handle.peers[node_id].append_entries(&args)
 }
 
-#[instrument(skip_all)]
+#[instrument(skip_all, level = "debug")]
 fn replicate_log<'a>(
     leader: &'a Leader,
     handle: &'a Handle,

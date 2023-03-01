@@ -8,7 +8,7 @@ use futures::channel::mpsc::unbounded;
 use futures::future;
 use futures::stream::StreamExt;
 use rand::Rng;
-use tracing::Level;
+
 
 use crate::proto::raftpb::*;
 use crate::raft;
@@ -62,9 +62,10 @@ fn init_logger() {
         .event_format(
             tracing_subscriber::fmt::format()
                 .with_file(true)
-                .with_line_number(true), // .pretty()
+                .with_line_number(true),
         )
-        .with_max_level(Level::INFO)
+        // .with_max_level(Level::WARN)
+        .with_env_filter("raft=debug")
         .init()
 }
 
@@ -484,7 +485,7 @@ impl Config {
         p.save_state_and_snapshot(raft_state, snapshot);
         self.saved[i] = Arc::new(p);
 
-        if let Some(rf) = self.rafts.lock().unwrap()[i].take() {
+        if let Some(mut rf) = self.rafts.lock().unwrap()[i].take() {
             rf.kill();
         }
     }
@@ -533,8 +534,8 @@ impl Config {
 
 impl Drop for Config {
     fn drop(&mut self) {
-        if let Ok(rafts) = self.rafts.try_lock() {
-            for r in rafts.iter().flatten() {
+        if let Ok(mut rafts) = self.rafts.try_lock() {
+            for r in rafts.iter_mut().flatten() {
                 r.kill();
             }
         }

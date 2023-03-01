@@ -21,10 +21,9 @@ prost-derive = "0.6"
 rand = "0.8"
 tokio = { version = "1", features = ["full"] }
 tracing = { version = "0.1", features = ["attributes"] }
-tracing-subscriber = { version = "0.3", features = ["fmt"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 num = "0.4"
 either = "1.6"
-assert2 = "0.3"
 
 labcodec = { path = "../labcodec" }
 labrpc = { path = "../labrpc" }

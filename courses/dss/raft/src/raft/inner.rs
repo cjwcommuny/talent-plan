@@ -8,7 +8,6 @@ use std::ops::Range;
 use crate::raft::persister::Persister;
 use crate::raft::role::Role;
 use crate::raft::{ApplyMsg, NodeId, TermId};
-use assert2::assert;
 use futures::channel::mpsc::UnboundedSender;
 use futures::SinkExt;
 use num::integer::div_ceil;
@@ -16,7 +15,7 @@ use rand::RngCore;
 
 use crate::raft::logs::Logs;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, info, instrument};
+use tracing::{instrument};
 
 pub struct Config {
     pub heartbeat_cycle: u64,
@@ -27,8 +26,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            heartbeat_cycle: 100,
-            heartbeat_failure_random_range: 300..500,
+            heartbeat_cycle: 50,
+            heartbeat_failure_random_range: 150..300,
             election_timeout: 300,
         }
     }
@@ -109,7 +108,7 @@ impl Handle {
 
     /// In the Raft paper, there is `lastApplied` field.
     /// But here, we don't don't make the execution of this function a transaction.
-    #[instrument(skip_all)]
+    #[instrument(skip_all, level = "debug")]
     pub async fn apply_messages<I, M>(apply_ch: &mut UnboundedSender<ApplyMsg>, messages: I)
     where
         I: Iterator<Item = M>,
@@ -117,7 +116,6 @@ impl Handle {
     {
         for entry in messages {
             let apply_msg = entry.into();
-            info!(?apply_msg);
             apply_ch.send(apply_msg).await.unwrap();
         }
     }
@@ -138,18 +136,39 @@ pub enum RemoteTask {
     },
 }
 
+pub struct RemoteTaskResult {
+    pub success: bool,
+    pub new_role: Role,
+}
+
+impl RemoteTaskResult {
+    pub fn new(success: bool, new_role: Role) -> Self {
+        Self { success, new_role }
+    }
+}
+
 impl RemoteTask {
-    pub async fn handle(self, role: Role, handle: &mut Handle) -> Role {
+    pub async fn handle(self, role: Role, handle: &mut Handle) -> RemoteTaskResult {
         match self {
             RemoteTask::RequestVote { args, sender } => {
                 let (reply, new_role) = role.request_vote(handle, &args);
+                let result = if reply.vote_granted {
+                    RemoteTaskResult::new(true, new_role)
+                } else {
+                    RemoteTaskResult::new(false, new_role)
+                };
                 sender.send(reply).unwrap();
-                new_role
+                result
             }
             RemoteTask::AppendEntries { args, sender } => {
                 let (reply, new_role) = role.append_entries(handle, args).await;
+                let result = if reply.match_length.is_some() {
+                    RemoteTaskResult::new(true, new_role)
+                } else {
+                    RemoteTaskResult::new(false, new_role)
+                };
                 sender.send(reply).unwrap();
-                new_role
+                result
             }
         }
     }
@@ -176,9 +195,9 @@ impl Election {
         self.current_term
     }
 
-    pub fn update_current_term(&mut self, current_term: TermId) {
-        assert!(current_term >= self.current_term);
-        self.current_term = current_term;
+    pub fn update_current_term(&mut self, new_term: TermId) {
+        assert!(new_term >= self.current_term);
+        self.current_term = new_term;
     }
 
     pub fn increment_term(&mut self) {
