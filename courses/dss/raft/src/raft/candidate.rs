@@ -74,7 +74,10 @@ impl Candidate {
                 }
                 Some(vote_result) = vote_result.next() => match vote_result {
                     VoteResult::Elected => break Role::Leader(Leader::new(handle.logs.get_log_len(), handle.peers.len())),
-                    VoteResult::Lost => break Role::Candidate(Candidate), // split vote
+                    // split vote, do nothing, wait for the election timeout
+                    // if we break the loop immediately, the candidate is likely to retry requesting vote immediately
+                    // and increment its term rapidly
+                    VoteResult::Lost => debug!("vote lost"),
                     VoteResult::FoundLargerTerm(new_term) => {
                         handle.election.update_current_term(new_term);
                         handle.election.voted_for = None;
@@ -102,9 +105,13 @@ async fn collect_vote(
     current_term: TermId,
 ) -> VoteResult {
     let mut votes_received = HashSet::from([node_id as u32]);
-    while let Some(reply) = replies
+    // we need to first check the number of received votes, then await the replies
+    // the order matters
+    // if we await the replies first, there can be a situation where the condition is satisfied,
+    // but still awating for the replies
+    while votes_received.len() < electoral_threshold && let Some(reply) = replies
         .next()
-        .await && votes_received.len() < electoral_threshold
+        .await
     {
         match reply {
             Ok(reply) => {
@@ -122,7 +129,6 @@ async fn collect_vote(
     if votes_received.len() >= electoral_threshold {
         VoteResult::Elected
     } else {
-        debug!("electoral_threshold: {}, votes_received: {}", electoral_threshold, votes_received.len());
         VoteResult::Lost
     }
 }

@@ -286,7 +286,8 @@ impl Node {
     pub fn kill(&mut self) {
         // Your code here, if desired.
         blocking_pass_message(&self.raft.local_task_sender, LocalTask::Shutdown)
-            .map_err(|e| error!("{}", e.to_string())).ok();
+            .map_err(|e| error!("{}", e.to_string()))
+            .ok();
     }
 
     /// A service wants to switch to snapshot.  

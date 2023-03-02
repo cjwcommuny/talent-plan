@@ -64,8 +64,7 @@ fn init_logger() {
                 .with_line_number(true),
         )
         .with_env_filter("raft=debug")
-        .with_ansi(false)
-        .pretty()
+        .with_ansi(true)
         .init()
 }
 

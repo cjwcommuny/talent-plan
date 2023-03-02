@@ -53,25 +53,40 @@ impl Logs {
         }
     }
 
-    // TODO: test
     pub fn update_log_tail(&mut self, tail_begin: usize, mut entries: Vec<LogEntry>) {
-        assert!(self.commit_length <= tail_begin && tail_begin <= self.logs.len(), "{}, {}, {}", tail_begin, self.commit_length, self.logs.len()); // must not modify committed logs
+        assert!(
+            tail_begin <= self.logs.len(),
+            "{}, {}",
+            tail_begin,
+            self.logs.len()
+        );
         let max_offset = min(entries.len(), self.logs.len() - tail_begin);
         let mutation_offset = (0..max_offset)
             .find(|offset| {
                 entries[*offset].log_state.term != self.logs[tail_begin + *offset].log_state.term
             })
             .unwrap_or(max_offset);
-        self.logs.splice(
-            tail_begin + mutation_offset..,
-            entries.drain(mutation_offset..),
+        let mutation_begin = tail_begin + mutation_offset;
+        // must not modify committed logs
+        assert!(
+            self.commit_length <= mutation_begin,
+            "{}, {}",
+            self.commit_length,
+            mutation_begin
         );
+        self.logs
+            .splice(mutation_begin.., entries.drain(mutation_offset..));
     }
 
     /// returns the logs just committed
     #[instrument(skip(self), fields(logs_len = self.logs.len()))]
     pub fn commit_logs(&mut self, new_commit_length: usize) -> impl Iterator<Item = &LogEntry> {
-        assert!(new_commit_length <= self.logs.len(), "{}, {}", new_commit_length, self.logs.len());
+        assert!(
+            new_commit_length <= self.logs.len(),
+            "{}, {}",
+            new_commit_length,
+            self.logs.len()
+        );
         let newly_committed = self.logs[self.commit_length..new_commit_length].iter();
         // `self.commit_length` can be incremented only
         assert!(self.commit_length <= new_commit_length);
@@ -90,26 +105,54 @@ mod test_log {
 
     #[test]
     fn test_update_log_tail() {
-        let mut log = Logs { logs: Vec::new(), commit_length: 0 };
+        let mut log = Logs {
+            logs: Vec::new(),
+            commit_length: 0,
+        };
         let entries = vec![build_log_entry(0), build_log_entry(1)];
         log.update_log_tail(0, entries.clone());
-        assert_eq!(log, Logs { logs: entries, commit_length: 0});
+        assert_eq!(
+            log,
+            Logs {
+                logs: entries,
+                commit_length: 0
+            }
+        );
 
         let original_entries = vec![build_log_entry(0), build_log_entry(1)];
-        let mut log = Logs { logs: original_entries.clone(), commit_length: 0 };
+        let mut log = Logs {
+            logs: original_entries.clone(),
+            commit_length: 0,
+        };
         let new_entries = vec![build_log_entry(2), build_log_entry(3)];
         log.update_log_tail(2, new_entries.clone());
-        assert_eq!(log.logs, original_entries.into_iter().chain(new_entries.into_iter()).collect::<Vec<_>>());
+        assert_eq!(
+            log.logs,
+            original_entries
+                .into_iter()
+                .chain(new_entries.into_iter())
+                .collect::<Vec<_>>()
+        );
 
         let original_entries = vec![
             build_log_entry(0),
             build_log_entry(1),
             build_log_entry(2),
-            build_log_entry(3)
+            build_log_entry(3),
         ];
-        let mut log = Logs { logs: original_entries.clone(), commit_length: 0 };
+        let mut log = Logs {
+            logs: original_entries.clone(),
+            commit_length: 0,
+        };
         let new_entries = vec![build_log_entry(1), build_log_entry(2)];
         log.update_log_tail(1, new_entries.clone());
-        assert_eq!(log.logs, original_entries.into_iter().take(1).chain(new_entries).collect::<Vec<_>>());
+        assert_eq!(
+            log.logs,
+            original_entries
+                .into_iter()
+                .take(1)
+                .chain(new_entries)
+                .collect::<Vec<_>>()
+        );
     }
 }
