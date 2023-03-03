@@ -3,16 +3,17 @@ use crate::proto::raftpb::{LogEntryProst, LogStateProst};
 use crate::raft::inner::RemoteTaskResult;
 use crate::raft::inner::{Handle, LocalTask};
 use crate::raft::leader::AppendEntriesResult::{Commit, FoundLargerTerm, Retry};
-use crate::raft::role::{Follower, Role};
+use crate::raft::role::Role;
 use crate::raft::{ApplyMsg, NodeId, TermId};
 use futures::{stream::FuturesUnordered, StreamExt};
 use std::future::Future;
 
 use std::time::Duration;
 
+use crate::raft::follower::Follower;
 use tokio::select;
 use tokio::time::interval;
-use tracing::{debug, error, info, instrument, span, Level};
+use tracing::{debug, error, info, instrument};
 
 /// inner structure for `ApplyMsg`
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,7 +46,6 @@ impl Leader {
             .collect();
         let mut heartbeat_timer = interval(Duration::from_millis(handle.config.heartbeat_cycle));
         let new_role: Role = loop {
-            let current_term = handle.election.get_current_term();
             select! {
                 _ = heartbeat_timer.tick() => {
                     rpc_replies
@@ -54,7 +54,7 @@ impl Leader {
                 Some(result) = rpc_replies.next() => {
                     match result {
                         Ok(reply) => {
-                            match self.on_receive_append_entries_reply(reply, current_term) {
+                            match Self::on_receive_append_entries_reply(reply, handle.election.get_current_term()) {
                                 AppendEntriesResult::Commit{ follower_id, match_length } => {
                                     self.next_index[follower_id] = match_length;
                                     self.match_length[follower_id] = match_length;
@@ -110,7 +110,6 @@ impl Leader {
 
     #[instrument(ret, level = "debug")]
     fn on_receive_append_entries_reply(
-        &mut self,
         reply: AppendEntriesReply,
         current_term: TermId,
     ) -> AppendEntriesResult {
@@ -119,7 +118,6 @@ impl Leader {
             FoundLargerTerm(reply.term)
         } else if reply.term == current_term && let Some(match_length) = reply.match_length {
             let match_length = match_length as usize;
-            assert!(match_length >= self.match_length[follower_id]);
             Commit {
                 follower_id,
                 match_length,
@@ -166,7 +164,7 @@ async fn try_commit_logs(leader: &Leader, handle: &mut Handle) {
 
 type ReplicateLogFuture = impl Future<Output = Result<AppendEntriesReply, labrpc::Error>>;
 
-#[instrument(skip(leader, handle), level = "debug")]
+#[instrument(skip(handle), level = "debug")]
 fn send_append_entries(
     leader: &Leader,
     handle: &Handle,
@@ -174,7 +172,7 @@ fn send_append_entries(
     entries: Vec<LogEntryProst>,
 ) -> ReplicateLogFuture {
     let log_length = leader.next_index[node_id];
-    let log_state = handle.logs.get_log_state_front(log_length).map(Into::into);
+    let log_state = handle.logs.get_log_state_before(log_length).map(Into::into);
     let args = AppendEntriesArgs {
         term: handle.election.get_current_term(),
         leader_id: handle.node_id as u64,
@@ -182,16 +180,15 @@ fn send_append_entries(
         entries,
         leader_commit_length: handle.logs.get_commit_length() as u64,
     };
+    debug!(?handle, ?args);
     handle.peers[node_id].append_entries(&args)
 }
 
-#[instrument(skip_all, level = "debug")]
 fn replicate_log<'a>(
     leader: &'a Leader,
     handle: &'a Handle,
 ) -> impl Fn(NodeId) -> ReplicateLogFuture + 'a {
     move |node_id| {
-        let _span = span!(Level::TRACE, "replicate_log");
         let log_length = leader.next_index[node_id];
         let entries: Vec<LogEntryProst> = handle
             .logs
@@ -220,13 +217,13 @@ impl LogEntry {
     }
 }
 
-impl Into<ApplyMsg> for LogEntry {
-    fn into(self) -> ApplyMsg {
+impl From<LogEntry> for ApplyMsg {
+    fn from(value: LogEntry) -> Self {
         let LogEntry {
             log_kind,
             data,
             log_state,
-        } = self;
+        } = value;
         match log_kind {
             LogKind::Command => ApplyMsg::Command {
                 data,
@@ -257,13 +254,13 @@ impl From<LogEntryProst> for LogEntry {
     }
 }
 
-impl Into<LogEntryProst> for LogEntry {
-    fn into(self) -> LogEntryProst {
+impl From<LogEntry> for LogEntryProst {
+    fn from(value: LogEntry) -> Self {
         let LogEntry {
             log_kind: apply_msg,
             data,
             log_state,
-        } = self;
+        } = value;
         match apply_msg {
             LogKind::Command => LogEntryProst {
                 is_command: true,
@@ -297,15 +294,15 @@ impl LogState {
 
 impl From<LogStateProst> for LogState {
     fn from(value: LogStateProst) -> Self {
-        LogState::new(value.last_log_term, value.last_log_index as usize)
+        LogState::new(value.term, value.index as usize)
     }
 }
 
-impl Into<LogStateProst> for LogState {
-    fn into(self) -> LogStateProst {
+impl From<LogState> for LogStateProst {
+    fn from(value: LogState) -> Self {
         LogStateProst {
-            last_log_term: self.term,
-            last_log_index: self.index as u32,
+            term: value.term,
+            index: value.index as u32,
         }
     }
 }

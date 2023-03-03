@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -14,6 +14,14 @@ use crate::raft;
 use crate::raft::persister::*;
 
 pub const SNAPSHOT_INTERVAL: u64 = 10;
+
+static INIT: Once = Once::new();
+
+pub fn initialize() {
+    INIT.call_once(|| {
+        // initialization code here
+    });
+}
 
 fn uniqstring() -> String {
     static ID: AtomicUsize = AtomicUsize::new(0);
@@ -56,18 +64,6 @@ impl Storage {
     }
 }
 
-fn init_logger() {
-    tracing_subscriber::fmt()
-        .event_format(
-            tracing_subscriber::fmt::format()
-                .with_file(true)
-                .with_line_number(true),
-        )
-        .with_env_filter("raft=debug")
-        .with_ansi(true)
-        .init()
-}
-
 pub struct Config {
     pub net: labrpc::Network,
     n: usize,
@@ -100,8 +96,6 @@ impl Config {
     }
 
     pub fn new_with(n: usize, unreliable: bool, snapshot: bool) -> Config {
-        init_logger();
-
         let net = labrpc::Network::new();
         net.set_reliable(!unreliable);
         net.set_long_delays(true);
@@ -484,7 +478,7 @@ impl Config {
         p.save_state_and_snapshot(raft_state, snapshot);
         self.saved[i] = Arc::new(p);
 
-        if let Some(mut rf) = self.rafts.lock().unwrap()[i].take() {
+        if let Some(rf) = self.rafts.lock().unwrap()[i].take() {
             rf.kill();
         }
     }
@@ -533,8 +527,8 @@ impl Config {
 
 impl Drop for Config {
     fn drop(&mut self) {
-        if let Ok(mut rafts) = self.rafts.try_lock() {
-            for r in rafts.iter_mut().flatten() {
+        if let Ok(rafts) = self.rafts.try_lock() {
+            for r in rafts.iter().flatten() {
                 r.kill();
             }
         }

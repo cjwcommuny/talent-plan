@@ -21,16 +21,17 @@ prost-derive = "0.6"
 rand = "0.8"
 tokio = { version = "1", features = ["full"] }
 tracing = { version = "0.1", features = ["attributes"] }
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "ansi"] }
 num = "0.4"
 either = "1.6"
+assert2 = "0.3"
+function_name = "0.2"
 
 labcodec = { path = "../labcodec" }
 labrpc = { path = "../labrpc" }
 linearizability = { path = "../linearizability"}
 
 [dev-dependencies]
-env_logger = "0.9"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "ansi"] }
 
 [build-dependencies]
 prost-build = "0.6"

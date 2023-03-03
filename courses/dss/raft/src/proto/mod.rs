@@ -1,5 +1,5 @@
 pub mod raftpb {
-    ///   Example RequestVote RPC arguments structure.
+    ///   Example `RequestVote` RPC arguments structure.
     #[derive(Clone, PartialEq, Eq, prost::Message)]
     pub struct RequestVoteArgs {
         #[prost(message, optional, tag = "1")]
@@ -13,13 +13,13 @@ pub mod raftpb {
     #[derive(Clone, PartialEq, Eq, Copy, prost::Message)]
     pub struct LogStateProst {
         #[prost(uint32, tag = "1")]
-        pub last_log_index: u32,
+        pub index: u32,
         #[prost(uint64, tag = "2")]
-        pub last_log_term: u64,
+        pub term: u64,
     }
 
     /// Google's Protobuf is shit, which cannot handle sum type well.
-    #[derive(Clone, PartialEq, prost::Message)]
+    #[derive(Clone, PartialEq, Eq, prost::Message)]
     pub struct LogEntryProst {
         // ApplyMsg
         #[prost(bool, tag = "1")]
@@ -49,7 +49,7 @@ pub mod raftpb {
     }
 
     /// if `log_length == 0`, then `prev_log_term == 0`.
-    #[derive(Clone, PartialEq, prost::Message)]
+    #[derive(Clone, PartialEq, Eq, prost::Message)]
     pub struct AppendEntriesArgs {
         #[prost(uint64, tag = "1")]
         pub term: u64,
@@ -91,7 +91,49 @@ pub mod raftpb {
 }
 
 pub mod kvraftpb {
-    include!(concat!(env!("OUT_DIR"), "/kvraftpb.rs"));
+    //// Put or Append
+    #[derive(Clone, PartialEq, Eq, ::prost::Message)]
+    pub struct PutAppendRequest {
+        #[prost(string, tag = "1")]
+        pub key: std::string::String,
+        #[prost(string, tag = "2")]
+        pub value: std::string::String,
+        /// "Put" or "Append"
+        ///
+        /// You'll have to add definitions here.
+        #[prost(enumeration = "Op", tag = "3")]
+        pub op: i32,
+    }
+
+    #[derive(Clone, PartialEq, Eq, ::prost::Message)]
+    pub struct PutAppendReply {
+        #[prost(bool, tag = "1")]
+        pub wrong_leader: bool,
+        #[prost(string, tag = "2")]
+        pub err: std::string::String,
+    }
+    #[derive(Clone, PartialEq, Eq, ::prost::Message)]
+    pub struct GetRequest {
+        /// You'll have to add definitions here.
+        #[prost(string, tag = "1")]
+        pub key: std::string::String,
+    }
+    #[derive(Clone, PartialEq, Eq, ::prost::Message)]
+    pub struct GetReply {
+        #[prost(bool, tag = "1")]
+        pub wrong_leader: bool,
+        #[prost(string, tag = "2")]
+        pub err: std::string::String,
+        #[prost(string, tag = "3")]
+        pub value: std::string::String,
+    }
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+    #[repr(i32)]
+    pub enum Op {
+        Unknown = 0,
+        Put = 1,
+        Append = 2,
+    }
 
     labrpc::service! {
         service kv {

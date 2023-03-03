@@ -1,16 +1,14 @@
-use futures::{pin_mut, stream, StreamExt};
-use rand::Rng;
-use std::time::Duration;
-use tokio::select;
-use tokio::time::sleep;
-use tracing::{debug, error, instrument};
+use std::cmp::max;
+
+use tracing::{debug, instrument};
 
 use crate::proto::raftpb::{
     AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply,
 };
 use crate::raft::candidate::Candidate;
-use crate::raft::inner::RemoteTaskResult;
-use crate::raft::inner::{Handle, LocalTask};
+use crate::raft::follower::Follower;
+
+use crate::raft::inner::Handle;
 use crate::raft::leader::{Leader, LogEntry, LogState};
 use crate::raft::NodeId;
 
@@ -50,24 +48,28 @@ impl Role {
                 || (args.term == current_term
                     && (voted_for.is_none() || voted_for == Some(args.candidate_id as usize)))
         };
-        if log_ok && term_ok {
-            handle.election.update_current_term(args.term); // FIXME: move this line out of the conditional block
-            handle.election.voted_for = Some(args.candidate_id as usize);
-            let response = RequestVoteReply {
-                term: handle.election.get_current_term(),
-                node_id: handle.node_id as u32,
-                vote_granted: true,
-            };
-            let new_role = Role::Follower(Follower::default());
-            (response, new_role)
+        let vote_granted = log_ok && term_ok;
+        let new_role = if vote_granted || args.term > handle.election.get_current_term() {
+            Role::Follower(Follower::default())
         } else {
-            let response = RequestVoteReply {
-                term: handle.election.get_current_term(),
-                node_id: handle.node_id as u32,
-                vote_granted: false,
-            };
-            (response, self)
+            self
+        };
+        let reply = RequestVoteReply {
+            term: max(handle.election.get_current_term(), args.term),
+            node_id: handle.node_id as u32,
+            vote_granted,
+        };
+        let result = (reply, new_role);
+
+        // --- side effect
+        if vote_granted {
+            handle.election.voted_for = Some(args.candidate_id as usize);
         }
+        if args.term > handle.election.get_current_term() {
+            handle.election.update_current_term(args.term);
+        }
+        // ---
+        result
     }
 
     #[instrument(skip(self), ret, level = "debug")]
@@ -76,7 +78,6 @@ impl Role {
         handle: &mut Handle,
         args: AppendEntriesArgs,
     ) -> (AppendEntriesReply, Role) {
-        assert!(args.leader_commit_length as usize >= handle.logs.get_commit_length());
         if args.term < handle.election.get_current_term() {
             handle.election.voted_for = None;
             let reply = AppendEntriesReply {
@@ -96,6 +97,7 @@ impl Role {
             });
             let log_ok = remote_log_state == local_log_state;
             let match_length = if log_ok {
+                debug!("{:?}, {:?}", handle, args);
                 let new_log_begin = local_log_state.map_or(0, |state| state.index + 1);
                 let entries: Vec<LogEntry> = args.entries.into_iter().map(Into::into).collect();
                 let match_length = (new_log_begin + entries.len()) as u64;
@@ -124,49 +126,5 @@ impl Role {
 impl Default for Role {
     fn default() -> Self {
         Role::Follower(Follower::default())
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct Follower;
-
-impl Follower {
-    #[instrument(name = "Follower::progress", skip_all, ret, fields(node_id = handle.node_id, term = handle.election.get_current_term()), level = "debug")]
-    pub async fn progress(self, handle: &mut Handle) -> Role {
-        let failure_timer = stream::once(sleep(Duration::from_millis(
-            handle
-                .random_generator
-                .gen_range(handle.config.heartbeat_failure_random_range.clone()),
-        )));
-        pin_mut!(failure_timer);
-        let new_role: Role = loop {
-            select! {
-                _ = failure_timer.next() => {
-                    debug!("failure timer timeout, transit to Candidate");
-                    break Role::Candidate(Candidate);
-                }
-                Some(task) = handle.local_task_receiver.recv() => {
-                    if let None = match task {
-                        LocalTask::AppendEntries { sender, .. } => sender.send(None).ok(), // not leader
-                        LocalTask::GetTerm(sender) => sender.send(handle.election.get_current_term()).ok(),
-                        LocalTask::CheckLeader(sender) => sender.send(false).ok(),
-                        LocalTask::Shutdown(sender) => {
-                            info!("shutdown");
-                            sender.send(()).unwrap();
-                            break Role::Stop;
-                        }
-                    } {
-                        error!("local task response error");
-                    }
-                }
-                Some(task) = handle.remote_task_receiver.recv() => {
-                    let RemoteTaskResult { success, new_role } = task.handle(Role::Follower(Follower), handle).await;
-                    if success {
-                        break new_role; // restart failure timer
-                    }
-                }
-            }
-        };
-        new_role
     }
 }

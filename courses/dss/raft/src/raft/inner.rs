@@ -14,32 +14,34 @@ use num::integer::div_ceil;
 use rand::RngCore;
 
 use crate::raft::logs::Logs;
+use assert2::assert;
 use tokio::sync::{mpsc, oneshot};
 use tracing::instrument;
 
 pub struct Config {
     pub heartbeat_cycle: u64,
-    pub heartbeat_failure_random_range: Range<u64>,
-    pub election_timeout: u64,
+    // NOTE: both follower and candidate need random timeout
+    // followers need random timeout to prevent multiple followers to become candidates simultaneously
+    // candidates need random timeout to prevent multiple candidates to restart votes collection simultaneously
+    pub election_timeout: Range<u64>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
-            heartbeat_cycle: 50,
-            heartbeat_failure_random_range: 150..300,
-            election_timeout: 300,
+            heartbeat_cycle: 100,
+            election_timeout: 300..500,
         }
     }
 }
 
-pub struct RaftInner {
+pub struct Inner {
     role: Option<Role>,
     handle: Handle,
 }
 
-impl RaftInner {
-    pub fn new(role: Option<Role>, handle: Handle) -> Self {
+impl Inner {
+    pub const fn new(role: Option<Role>, handle: Handle) -> Self {
         Self { role, handle }
     }
 
@@ -60,7 +62,7 @@ pub struct Handle {
     pub peers: Vec<RaftClient>, // RPC end points of all peers
     pub remote_task_receiver: mpsc::Receiver<RemoteTask>,
     pub local_task_receiver: mpsc::Receiver<LocalTask>,
-    pub random_generator: Box<dyn RngCore>,
+    pub random_generator: Box<dyn RngCore + Send>,
     pub config: Config,
 }
 
@@ -75,6 +77,7 @@ impl Debug for Handle {
 }
 
 impl Handle {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         node_id: usize,
         persister: Box<dyn Persister>,
@@ -84,7 +87,7 @@ impl Handle {
         peers: Vec<RaftClient>,
         remote_task_receiver: mpsc::Receiver<RemoteTask>,
         local_task_receiver: mpsc::Receiver<LocalTask>,
-        random_generator: Box<dyn RngCore>,
+        random_generator: Box<dyn RngCore + Send>,
         config: Config,
     ) -> Self {
         Self {
@@ -111,7 +114,7 @@ impl Handle {
     #[instrument(skip_all, level = "debug")]
     pub async fn apply_messages<I, M>(apply_ch: &mut UnboundedSender<ApplyMsg>, messages: I)
     where
-        I: Iterator<Item = M>,
+        I: Iterator<Item = M> + Send,
         M: Into<ApplyMsg>,
     {
         for entry in messages {
@@ -136,13 +139,24 @@ pub enum RemoteTask {
     },
 }
 
+impl Debug for RemoteTask {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("RemoteTask");
+        match self {
+            Self::RequestVote { args, .. } => debug.field("RequestVoteArgs", args),
+            Self::AppendEntries { args, .. } => debug.field("AppendEntiresArgs", args),
+        };
+        debug.finish()
+    }
+}
+
 pub struct RemoteTaskResult {
     pub success: bool,
     pub new_role: Role,
 }
 
 impl RemoteTaskResult {
-    pub fn new(success: bool, new_role: Role) -> Self {
+    pub const fn new(success: bool, new_role: Role) -> Self {
         Self { success, new_role }
     }
 }
@@ -186,21 +200,21 @@ pub enum LocalTask {
 
 #[derive(Default, Debug)]
 pub struct Election {
-    current_term: TermId,
+    term: TermId,
     pub voted_for: Option<NodeId>,
 }
 
 impl Election {
     pub fn get_current_term(&self) -> TermId {
-        self.current_term
+        self.term
     }
 
     pub fn update_current_term(&mut self, new_term: TermId) {
-        assert!(new_term >= self.current_term);
-        self.current_term = new_term;
+        assert!(new_term >= self.term);
+        self.term = new_term;
     }
 
     pub fn increment_term(&mut self) {
-        self.current_term += 1;
+        self.term += 1;
     }
 }

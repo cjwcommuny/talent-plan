@@ -3,16 +3,18 @@ use crate::raft::errors::{Error, Result};
 use crate::raft::inner::RemoteTaskResult;
 use crate::raft::inner::{Handle, LocalTask};
 use crate::raft::leader::Leader;
-use crate::raft::role::{Follower, Role};
+use crate::raft::role::Role;
 use crate::raft::{NodeId, TermId};
 use futures::{stream, stream::FuturesUnordered, FutureExt, Stream, StreamExt};
 use std::collections::HashSet;
 use std::fmt::Debug;
 
+use crate::raft::follower::Follower;
+use rand::Rng;
 use std::time::Duration;
 use tokio::select;
 use tokio::time::sleep;
-use tracing::{error, instrument};
+use tracing::{debug, error, instrument};
 
 #[derive(Debug, Default)]
 pub struct Candidate;
@@ -39,7 +41,7 @@ impl Candidate {
                     })
                     .collect()
             };
-
+            debug!(?handle);
             stream::once(collect_vote(
                 handle.node_id,
                 replies,
@@ -47,8 +49,11 @@ impl Candidate {
                 handle.election.get_current_term(),
             ))
         };
-        let election_timeout =
-            stream::once(sleep(Duration::from_millis(handle.config.election_timeout)));
+        let election_timeout = stream::once(sleep(Duration::from_millis(
+            handle
+                .random_generator
+                .gen_range(handle.config.election_timeout.clone()),
+        )));
         futures::pin_mut!(vote_result);
         futures::pin_mut!(election_timeout);
         let new_role: Role = loop {
@@ -120,7 +125,7 @@ async fn collect_vote(
                 } else if reply.term > current_term {
                     return VoteResult::FoundLargerTerm(reply.term);
                 } else {
-                    debug!("received outdated votes, current_term: {}, reply.term: {}", current_term, reply.term);
+                    debug!("received outdated votes or non-granted votes, current_term: {}, reply.term: {}", current_term, reply.term);
                 }
             }
             Err(e) => error!("{}", e.to_string())

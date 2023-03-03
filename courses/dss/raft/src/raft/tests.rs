@@ -1,16 +1,21 @@
 #![allow(clippy::identity_op)]
 
+use std::fs::File;
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use function_name::named;
 use futures::channel::oneshot;
 use futures::executor::block_on;
 use futures::future;
 use rand::{rngs::ThreadRng, Rng};
-use tracing::instrument;
+use tracing::dispatcher::DefaultGuard;
+use tracing::{info, instrument};
+use tracing_subscriber::EnvFilter;
 
 use crate::raft::config::{Config, Entry, Storage, SNAPSHOT_INTERVAL};
 use crate::raft::Node;
@@ -25,8 +30,22 @@ fn random_entry(rnd: &mut ThreadRng) -> Entry {
     }
 }
 
+fn init_logger(test_name: &str) -> DefaultGuard {
+    let file = File::create(Path::new("../logs").join(&format!("{}.log", test_name))).unwrap();
+    let subscriber = tracing_subscriber::fmt()
+        .with_file(true)
+        .with_line_number(true)
+        .with_ansi(false)
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_writer(Arc::new(file))
+        .finish();
+    tracing::subscriber::set_default(subscriber)
+}
+
 #[test]
+#[named]
 fn test_initial_election_2a() {
+    let _subscriber = init_logger(function_name!());
     let servers = 3;
     let mut cfg = Config::new(servers);
 
@@ -57,7 +76,9 @@ fn test_initial_election_2a() {
 }
 
 #[test]
+#[named]
 fn test_reelection_2a() {
+    let _subscriber = init_logger(function_name!());
     let servers = 3;
     let mut cfg = Config::new(servers);
     cfg.begin("Test (2A): election after network failure");
@@ -93,7 +114,9 @@ fn test_reelection_2a() {
 }
 
 #[test]
+#[named]
 fn test_many_election_2a() {
+    let _subscriber = init_logger(function_name!());
     let servers = 7;
     let iters = 10;
     let mut cfg = Config::new(servers);
@@ -128,7 +151,9 @@ fn test_many_election_2a() {
 
 #[test]
 #[instrument]
+#[named]
 fn test_basic_agree_2b() {
+    let _subscriber = init_logger(function_name!());
     let servers = 5;
     let mut cfg = Config::new(servers);
     cfg.begin("Test (2B): basic agreement");
@@ -149,38 +174,51 @@ fn test_basic_agree_2b() {
 }
 
 #[test]
+#[named]
 fn test_fail_agree_2b() {
+    let _subscriber = init_logger(function_name!());
     let servers = 3;
     let mut cfg = Config::new(servers);
 
     cfg.begin("Test (2B): agreement despite follower disconnection");
 
+    info!("one Entry {{x: 101 }}");
     cfg.one(Entry { x: 101 }, servers, false);
 
     // follower network disconnection
     let leader = cfg.check_one_leader();
+    info!("follower network disconnection");
     cfg.disconnect((leader + 1) % servers);
 
     // agree despite one disconnected server?
+    info!("one Entry {{x: 102 }}");
     cfg.one(Entry { x: 102 }, servers - 1, false);
+    info!("one Entry {{x: 103 }}");
     cfg.one(Entry { x: 103 }, servers - 1, false);
     thread::sleep(RAFT_ELECTION_TIMEOUT);
+    info!("one Entry {{x: 104 }}");
     cfg.one(Entry { x: 104 }, servers - 1, false);
+    info!("one Entry {{x: 105 }}");
     cfg.one(Entry { x: 105 }, servers - 1, false);
 
     // re-connect
+    info!("re-connect");
     cfg.connect((leader + 1) % servers);
 
     // agree with full set of servers?
+    info!("one Entry {{x: 106 }}");
     cfg.one(Entry { x: 106 }, servers, true);
     thread::sleep(RAFT_ELECTION_TIMEOUT);
+    info!("one Entry {{x: 107 }}");
     cfg.one(Entry { x: 107 }, servers, true);
 
     cfg.end();
 }
 
 #[test]
+#[named]
 fn test_fail_no_agree_2b() {
+    let _subscriber = init_logger(function_name!());
     let servers = 5;
     let mut cfg = Config::new(servers);
 
@@ -190,6 +228,7 @@ fn test_fail_no_agree_2b() {
 
     // 3 of 5 followers disconnect
     let leader = cfg.check_one_leader();
+    info!("3 of 5 followers disconnect");
     cfg.disconnect((leader + 1) % servers);
     cfg.disconnect((leader + 2) % servers);
     cfg.disconnect((leader + 3) % servers);
@@ -210,6 +249,7 @@ fn test_fail_no_agree_2b() {
     }
 
     // repair
+    info!("repair");
     cfg.connect((leader + 1) % servers);
     cfg.connect((leader + 2) % servers);
     cfg.connect((leader + 3) % servers);
@@ -232,7 +272,9 @@ fn test_fail_no_agree_2b() {
 }
 
 #[test]
+#[named]
 fn test_concurrent_starts_2b() {
+    let _subscriber = init_logger(function_name!());
     let servers = 3;
     let mut cfg = Config::new(servers);
 
@@ -330,7 +372,9 @@ fn test_concurrent_starts_2b() {
 }
 
 #[test]
+#[named]
 fn test_rejoin_2b() {
+    let _subscriber = init_logger(function_name!());
     let servers = 3;
     let mut cfg = Config::new(servers);
 
@@ -340,6 +384,7 @@ fn test_rejoin_2b() {
 
     // leader network failure
     let leader1 = cfg.check_one_leader();
+    info!("leader network failure");
     cfg.disconnect(leader1);
 
     // make old leader try to agree on some entries
@@ -361,14 +406,17 @@ fn test_rejoin_2b() {
 
     // new leader network failure
     let leader2 = cfg.check_one_leader();
+    info!("new leader network failure");
     cfg.disconnect(leader2);
 
     // old leader connected again
+    info!("old leader connected again");
     cfg.connect(leader1);
 
     cfg.one(Entry { x: 104 }, 2, true);
 
     // all together now
+    info!("all together now");
     cfg.connect(leader2);
 
     cfg.one(Entry { x: 105 }, servers, true);
@@ -377,42 +425,68 @@ fn test_rejoin_2b() {
 }
 
 #[test]
+#[named]
 fn test_backup_2b() {
+    const N: usize = 50;
+    let mut entry_index = 0..;
+    let _subscriber = init_logger(function_name!());
     let servers = 5;
     let mut cfg = Config::new(servers);
 
     cfg.begin("Test (2B): leader backs up quickly over incorrect follower logs");
 
-    let mut random = rand::thread_rng();
-    cfg.one(random_entry(&mut random), servers, true);
+    let entry = Entry {
+        x: entry_index.next().unwrap(),
+    };
+    info!("add initial entry {:?}", entry);
+    cfg.one(entry, servers, true);
 
     // put leader and one follower in a partition
     let leader1 = cfg.check_one_leader();
+    info!(
+        "put leader {} and one follower {} in a partition",
+        leader1,
+        (leader1 + 1) % servers
+    );
     cfg.disconnect((leader1 + 2) % servers);
     cfg.disconnect((leader1 + 3) % servers);
     cfg.disconnect((leader1 + 4) % servers);
 
     // submit lots of commands that won't commit
-    for _i in 0..50 {
+    for i in 0..N {
+        let entry = Entry {
+            x: entry_index.next().unwrap(),
+        };
+        info!("{}: commands won't commit: {:?}", i, entry);
         let _ = cfg.rafts.lock().unwrap()[leader1]
             .as_ref()
             .unwrap()
-            .start(&random_entry(&mut random));
+            .start(&entry);
     }
 
     thread::sleep(RAFT_ELECTION_TIMEOUT / 2);
-
+    info!("disconnect");
     cfg.disconnect((leader1 + 0) % servers);
     cfg.disconnect((leader1 + 1) % servers);
 
     // allow other partition to recover
+    info!(
+        "allow other {}, {}, {} partition to recover",
+        (leader1 + 2) % servers,
+        (leader1 + 3) % servers,
+        (leader1 + 4) % servers
+    );
     cfg.connect((leader1 + 2) % servers);
     cfg.connect((leader1 + 3) % servers);
     cfg.connect((leader1 + 4) % servers);
 
     // lots of successful commands to new group.
-    for _i in 0..50 {
-        cfg.one(random_entry(&mut random), 3, true);
+    for i in 0..N {
+        let entry = Entry {
+            x: entry_index.next().unwrap(),
+        };
+        info!("{}: successful commands to new group: {:?}", i, entry);
+        cfg.one(entry, 3, true);
     }
 
     // now another partitioned leader and one follower
@@ -421,19 +495,30 @@ fn test_backup_2b() {
     if leader2 == other {
         other = (leader2 + 1) % servers;
     }
+    info!("disconnect other {}", other);
     cfg.disconnect(other);
 
     // lots more commands that won't commit
-    for _i in 0..50 {
+    for i in 0..N {
+        let entry = Entry {
+            x: entry_index.next().unwrap(),
+        };
+        info!("{}: more commands won't commit: {:?}", i, entry);
         let _ = cfg.rafts.lock().unwrap()[leader2]
             .as_ref()
             .unwrap()
-            .start(&random_entry(&mut random));
+            .start(&entry);
     }
 
     thread::sleep(RAFT_ELECTION_TIMEOUT / 2);
 
     // bring original leader back to life,
+    info!(
+        "bring original leader back to life, {}, {}, {}",
+        leader1,
+        (leader1 + 1) % servers,
+        other
+    );
     for i in 0..servers {
         cfg.disconnect(i);
     }
@@ -442,21 +527,33 @@ fn test_backup_2b() {
     cfg.connect(other);
 
     // lots of successful commands to new group.
-    for _i in 0..50 {
-        cfg.one(random_entry(&mut random), 3, true);
+    for i in 0..N {
+        let entry = Entry {
+            x: entry_index.next().unwrap(),
+        };
+        info!("{}: successful commands to new group-2: {:?}", i, entry);
+        cfg.one(entry, 3, true);
     }
 
     // now everyone
+    info!("now everyone");
     for i in 0..servers {
         cfg.connect(i);
     }
-    cfg.one(random_entry(&mut random), servers, true);
+
+    let entry = Entry {
+        x: entry_index.next().unwrap(),
+    };
+    info!("add last entry {:?}", entry);
+    cfg.one(entry, servers, true);
 
     cfg.end();
 }
 
 #[test]
+#[named]
 fn test_count_2b() {
+    let _subscriber = init_logger(function_name!());
     const SERVERS: usize = 3;
     fn rpcs(cfg: &Config) -> usize {
         let mut n: usize = 0;
@@ -585,7 +682,9 @@ fn test_count_2b() {
 }
 
 #[test]
+#[named]
 fn test_persist1_2c() {
+    let _subscriber = init_logger(function_name!());
     let servers = 3;
     let mut cfg = Config::new(servers);
 
@@ -631,7 +730,9 @@ fn test_persist1_2c() {
 }
 
 #[test]
+#[named]
 fn test_persist2_2c() {
+    let _subscriber = init_logger(function_name!());
     let servers = 5;
     let mut cfg = Config::new(servers);
 
@@ -677,7 +778,9 @@ fn test_persist2_2c() {
 }
 
 #[test]
+#[named]
 fn test_persist3_2c() {
+    let _subscriber = init_logger(function_name!());
     let servers = 3;
     let mut cfg = Config::new(servers);
 
@@ -715,7 +818,9 @@ fn test_persist3_2c() {
 // The leader in a new term may try to finish replicating log entries that
 // haven't been committed yet.
 #[test]
+#[named]
 fn test_figure_8_2c() {
+    let _subscriber = init_logger(function_name!());
     let servers = 5;
     let mut cfg = Config::new(servers);
 
@@ -772,7 +877,9 @@ fn test_figure_8_2c() {
 }
 
 #[test]
+#[named]
 fn test_unreliable_agree_2c() {
+    let _subscriber = init_logger(function_name!());
     let servers = 5;
 
     let cfg = {
@@ -816,7 +923,9 @@ fn test_unreliable_agree_2c() {
 }
 
 #[test]
+#[named]
 fn test_figure_8_unreliable_2c() {
+    let _subscriber = init_logger(function_name!());
     let servers = 5;
     let mut cfg = Config::new_with(servers, true, false);
 
@@ -1044,12 +1153,16 @@ fn internal_churn(unreliable: bool) {
 }
 
 #[test]
+#[named]
 fn test_reliable_churn_2c() {
+    let _subscriber = init_logger(function_name!());
     internal_churn(false);
 }
 
 #[test]
+#[named]
 fn test_unreliable_churn_2c() {
+    let _subscriber = init_logger(function_name!());
     internal_churn(true);
 }
 
@@ -1112,12 +1225,16 @@ fn snap_common(name: &str, disconnect: bool, reliable: bool, crash: bool) {
 }
 
 #[test]
+#[named]
 fn test_snapshot_basic_2d() {
+    let _subscriber = init_logger(function_name!());
     snap_common("Test (2D): snapshots basic", false, true, false);
 }
 
 #[test]
+#[named]
 fn test_snapshot_install_2d() {
+    let _subscriber = init_logger(function_name!());
     snap_common(
         "Test (2D): install snapshots (disconnect)",
         true,
@@ -1127,7 +1244,9 @@ fn test_snapshot_install_2d() {
 }
 
 #[test]
+#[named]
 fn test_snapshot_install_unreliable_2d() {
+    let _subscriber = init_logger(function_name!());
     snap_common(
         "Test (2D): install snapshots (disconnect+unreliable)",
         true,
@@ -1137,12 +1256,16 @@ fn test_snapshot_install_unreliable_2d() {
 }
 
 #[test]
+#[named]
 fn test_snapshot_install_crash_2d() {
+    let _subscriber = init_logger(function_name!());
     snap_common("Test (2D): install snapshots (crash)", false, true, true);
 }
 
 #[test]
+#[named]
 fn test_snapshot_install_unreliable_crash_2d() {
+    let _subscriber = init_logger(function_name!());
     snap_common(
         "Test (2D): install snapshots (unreliable+crash)",
         false,

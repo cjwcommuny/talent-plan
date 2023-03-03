@@ -15,7 +15,7 @@ pub use self::server::{Handler, HandlerFactory, RpcFuture, Server, ServerBuilder
 #[cfg(test)]
 pub mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{mpsc, Arc, Mutex, Once};
+    use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -86,10 +86,7 @@ pub mod tests {
         }
     }
 
-    fn init_logger() {
-        static LOGGER_INIT: Once = Once::new();
-        LOGGER_INIT.call_once(env_logger::init);
-    }
+    fn init_logger() {}
 
     #[test]
     fn test_service_dispatch() {

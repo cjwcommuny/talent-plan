@@ -4,8 +4,11 @@ use futures::TryFutureExt;
 use inner::{Handle, RemoteTask};
 use labrpc::Error::{Other, Recv};
 use logs::Logs;
-use rand::thread_rng;
+use rand::rngs::StdRng;
+use rand::SeedableRng;
+use std::fmt::Debug;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, instrument};
@@ -15,6 +18,7 @@ mod common;
 #[cfg(test)]
 pub mod config;
 pub mod errors;
+mod follower;
 mod inner;
 mod leader;
 mod logs;
@@ -27,8 +31,7 @@ use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
 
-use crate::raft::inner::{Config, Election, LocalTask, RaftInner};
-
+use crate::raft::inner::{Config, Election, Inner, LocalTask};
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
 /// server, via the `apply_ch` passed to `Raft::new`.
@@ -73,20 +76,14 @@ pub struct Raft {
     remote_task_sender: mpsc::Sender<RemoteTask>,
     local_task_sender: mpsc::Sender<LocalTask>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
+    node_id: NodeId,
 }
 
 impl Drop for Raft {
     #[instrument(skip_all)]
     fn drop(&mut self) {
         if let Some(handle) = self.thread_handle.take() {
-            handle
-                .join()
-                .map_err(|_| {
-                    error!("thread panic");
-                    println!("thread panic2")
-                    // resume_unwind(e)
-                })
-                .ok();
+            handle.join().map_err(|_| error!("thread panic")).ok();
         }
     }
 }
@@ -117,8 +114,13 @@ impl Raft {
         let (local_task_sender, local_task_receiver) = mpsc::channel(Self::BUFFER_SIZE);
 
         let raft_runtime = Runtime::new().unwrap();
+
+        // see https://github.com/tokio-rs/tracing/discussions/1626
+        let dispatch = tracing::dispatcher::Dispatch::default();
         let handle = std::thread::spawn(move || {
-            let mut raft_inner = RaftInner::new(
+            let dispatch = &dispatch;
+            let _guard = tracing::dispatcher::set_default(dispatch);
+            let mut raft_inner = Inner::new(
                 Some(Role::default()),
                 Handle::new(
                     node_id,
@@ -129,7 +131,12 @@ impl Raft {
                     peers,
                     remote_task_receiver,
                     local_task_receiver,
-                    Box::new(thread_rng()),
+                    Box::new(StdRng::seed_from_u64(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64,
+                    )),
                     Config::default(),
                 ),
             );
@@ -140,6 +147,7 @@ impl Raft {
             remote_task_sender,
             local_task_sender,
             thread_handle: Some(handle),
+            node_id,
         };
 
         // initialize from state persisted before a crash
@@ -241,7 +249,7 @@ impl Node {
         M: labcodec::Message,
     {
         let mut buffer = Vec::new();
-        command.encode(&mut buffer).map_err(|e| Error::Encode(e))?;
+        command.encode(&mut buffer).map_err(Error::Encode)?;
         blocking_pass_message(&self.raft.local_task_sender, |sender| {
             LocalTask::AppendEntries {
                 data: buffer,
@@ -257,13 +265,13 @@ impl Node {
     /// The current term of this peer.
     pub fn term(&self) -> u64 {
         blocking_pass_message(&self.raft.local_task_sender, LocalTask::GetTerm)
-            .expect("get term failed")
+            .unwrap_or_else(|_| panic!("get term failed in node {}", self.raft.node_id))
     }
 
     /// Whether this peer believes it is the leader.
     pub fn is_leader(&self) -> bool {
         blocking_pass_message(&self.raft.local_task_sender, LocalTask::CheckLeader)
-            .expect("check is leader failed")
+            .unwrap_or_else(|_| panic!("check is leader failed in node {}", self.raft.node_id))
     }
 
     /// The current state of this peer.
@@ -283,10 +291,10 @@ impl Node {
     /// a VIRTUAL crash in tester, so take care of background
     /// threads you generated with this Raft Node.
     #[instrument(skip_all)]
-    pub fn kill(&mut self) {
+    pub fn kill(&self) {
         // Your code here, if desired.
         blocking_pass_message(&self.raft.local_task_sender, LocalTask::Shutdown)
-            .map_err(|e| error!("{}", e.to_string()))
+            .map_err(|e| error!("in node {}: {}", self.raft.node_id, e.to_string()))
             .ok();
     }
 
@@ -348,6 +356,7 @@ fn blocking_pass_message<F, R, M>(
 ) -> labrpc::Result<R>
 where
     F: FnOnce(oneshot::Sender<R>) -> M,
+    R: Send,
 {
     let (sender, receiver) = oneshot::channel();
     message_sender
@@ -362,6 +371,7 @@ async fn pass_message<F, R, M>(
 ) -> labrpc::Result<R>
 where
     F: FnOnce(oneshot::Sender<R>) -> M,
+    R: Send,
 {
     let (sender, receiver) = oneshot::channel();
     message_sender

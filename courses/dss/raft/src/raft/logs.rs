@@ -1,6 +1,9 @@
 use crate::raft::leader::{LogEntry, LogKind, LogState};
 use crate::raft::TermId;
+use assert2::assert;
+use either::Either;
 use std::cmp::min;
+use std::iter::empty;
 use tracing::instrument;
 
 /// `commit_length` split the logs to the two sections:
@@ -45,11 +48,11 @@ impl Logs {
     }
 
     /// return `LogState` of `self.log[..length]`
-    pub fn get_log_state_front(&self, length: usize) -> Option<LogState> {
-        if length == 0 {
+    pub fn get_log_state_before(&self, index: usize) -> Option<LogState> {
+        if index == 0 {
             None
         } else {
-            Some(self.logs[length - 1].log_state)
+            Some(self.logs[index - 1].log_state)
         }
     }
 
@@ -87,11 +90,19 @@ impl Logs {
             new_commit_length,
             self.logs.len()
         );
-        let newly_committed = self.logs[self.commit_length..new_commit_length].iter();
         // `self.commit_length` can be incremented only
-        assert!(self.commit_length <= new_commit_length);
-        self.commit_length = new_commit_length;
-        newly_committed
+        if self.commit_length < new_commit_length {
+            let newly_committed = self.logs[self.commit_length..new_commit_length].iter();
+            self.commit_length = new_commit_length;
+            Either::Left(newly_committed)
+        } else {
+            // `self.logs[new_commit_length..self.commit_length] has been committed
+            // this situation occurs when leader has smaller `commit_length` than follower
+            // if `node1` is leader at first and `node1.commit_length > node2.commit_length`
+            // and `node1.log.len() == node2.log.len()`, then `node1` no longer be leader
+            // due to some reasons, and node2 becoms leader
+            Either::Right(empty())
+        }
     }
 }
 

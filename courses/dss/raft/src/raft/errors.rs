@@ -10,17 +10,17 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
 impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match *self {
-            Error::Encode(ref e) => Some(e),
-            Error::Decode(ref e) => Some(e),
-            Error::Rpc(ref e) => Some(e),
-            _ => None,
+            Self::Encode(ref e) => Some(e),
+            Self::Decode(ref e) => Some(e),
+            Self::Rpc(ref e) => Some(e),
+            Self::NotLeader => None,
         }
     }
 }

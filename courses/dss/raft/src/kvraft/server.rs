@@ -1,6 +1,6 @@
 use futures::channel::mpsc::unbounded;
 
-use crate::proto::kvraftpb::*;
+use crate::proto::kvraftpb::{GetReply, GetRequest, KvService, PutAppendReply, PutAppendRequest};
 use crate::raft;
 
 pub struct KvServer {
@@ -17,7 +17,7 @@ impl KvServer {
         me: usize,
         persister: Box<dyn raft::persister::Persister>,
         maxraftstate: Option<usize>,
-    ) -> KvServer {
+    ) -> Self {
         // You may need initialization code here.
 
         let (tx, apply_ch) = unbounded();
@@ -61,11 +61,11 @@ impl Node {
         crate::your_code_here(kv);
     }
 
-    /// the tester calls kill() when a KVServer instance won't
+    /// the tester calls kill() when a `KVServer` instance won't
     /// be needed again. you are not required to do anything
     /// in kill(), but it might be convenient to (for example)
     /// turn off debug output from this instance.
-    pub fn kill(&self) {
+    pub const fn kill(&self) {
         // If you want to free some resources by `raft::Node::kill` method,
         // you should call `raft::Node::kill` here also to prevent resource leaking.
         // Since the test framework will call kvraft::Node::kill only.
