@@ -20,7 +20,7 @@ use tracing::{debug, error, info, instrument};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogKind {
     Command,
-    Snapshot { term: TermId },
+    Snapshot,
 }
 
 /// It's impossible that there exists multiple leaders with the same term.
@@ -159,7 +159,7 @@ async fn try_commit_logs(leader: &Leader, handle: &mut Handle) {
     let new_commit_length = (handle.logs.get_commit_length()..handle.logs.get_log_len())
         .find(|match_length| compute_acks(*match_length) < commit_threshold)
         .unwrap_or(handle.logs.get_log_len());
-    let messages = handle.logs.commit_logs(new_commit_length).map(Clone::clone);
+    let messages = handle.logs.commit_logs(new_commit_length);
     Handle::apply_messages(&mut handle.apply_ch, messages).await
 }
 
@@ -207,35 +207,40 @@ fn replicate_log<'a>(
 pub struct LogEntry {
     log_kind: LogKind,
     data: Vec<u8>,
-    pub(crate) log_state: LogState,
+    pub term: TermId,
 }
 
 impl LogEntry {
-    pub fn new(log_kind: LogKind, data: Vec<u8>, index: usize, term: TermId) -> Self {
+    pub fn new(log_kind: LogKind, data: Vec<u8>, term: TermId) -> Self {
         LogEntry {
             log_kind,
             data,
-            log_state: LogState::new(term, index),
+            term,
         }
     }
 }
 
-impl From<LogEntry> for ApplyMsg {
-    fn from(value: LogEntry) -> Self {
+impl From<(usize, LogEntry)> for ApplyMsg {
+    fn from(value: (usize, LogEntry)) -> Self {
+        let (index, entry) = value;
         let LogEntry {
             log_kind,
             data,
-            log_state,
-        } = value;
+            term,
+        } = entry;
+
+        // The test code uses indices starting from 1,
+        // while the implementation uses indices starting from 0.
+        let one_based_index = index as u64 + 1;
         match log_kind {
             LogKind::Command => ApplyMsg::Command {
                 data,
-                index: log_state.index as u64 + 1, // The test code uses indices starting from 1, while the implementation uses indices starting from 0.
+                index: one_based_index,
             },
-            LogKind::Snapshot { term } => ApplyMsg::Snapshot {
+            LogKind::Snapshot => ApplyMsg::Snapshot {
                 data,
                 term,
-                index: log_state.index as u64 + 1,
+                index: one_based_index,
             },
         }
     }
@@ -246,38 +251,29 @@ impl From<LogEntryProst> for LogEntry {
         let log_kind = if value.is_command {
             LogKind::Command
         } else {
-            LogKind::Snapshot { term: value.term }
+            LogKind::Snapshot
         };
-        LogEntry::new(
-            log_kind,
-            value.data,
-            value.last_log_index as usize,
-            value.last_log_term,
-        )
+        LogEntry::new(log_kind, value.data, value.term)
     }
 }
 
 impl From<LogEntry> for LogEntryProst {
     fn from(value: LogEntry) -> Self {
         let LogEntry {
-            log_kind: apply_msg,
+            log_kind,
             data,
-            log_state,
+            term,
         } = value;
-        match apply_msg {
+        match log_kind {
             LogKind::Command => LogEntryProst {
                 is_command: true,
-                term: 0,
                 data,
-                last_log_index: log_state.index as u32,
-                last_log_term: log_state.term,
-            },
-            LogKind::Snapshot { term } => LogEntryProst {
-                is_command: false,
                 term,
+            },
+            LogKind::Snapshot => LogEntryProst {
+                is_command: false,
                 data,
-                last_log_index: log_state.index as u32,
-                last_log_term: log_state.term,
+                term,
             },
         }
     }
@@ -285,19 +281,19 @@ impl From<LogEntry> for LogEntryProst {
 
 #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Copy, Clone)]
 pub struct LogState {
-    pub term: TermId,
     pub index: usize,
+    pub term: TermId,
 }
 
 impl LogState {
-    pub fn new(term: TermId, index: usize) -> Self {
+    pub fn new(index: usize, term: TermId) -> Self {
         LogState { term, index }
     }
 }
 
 impl From<LogStateProst> for LogState {
     fn from(value: LogStateProst) -> Self {
-        LogState::new(value.term, value.index as usize)
+        LogState::new(value.index as usize, value.term)
     }
 }
 

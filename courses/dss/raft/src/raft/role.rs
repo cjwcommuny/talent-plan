@@ -93,7 +93,7 @@ impl Role {
                 handle
                     .logs
                     .get(remote_state.index)
-                    .map(|entry| entry.log_state)
+                    .map(|entry| LogState::new(remote_state.index, entry.term))
             });
             let log_ok = remote_log_state == local_log_state;
             let match_length = if log_ok {
@@ -102,10 +102,7 @@ impl Role {
                 let entries: Vec<LogEntry> = args.entries.into_iter().map(Into::into).collect();
                 let match_length = (new_log_begin + entries.len()) as u64;
                 handle.logs.update_log_tail(new_log_begin, entries);
-                let logs = handle
-                    .logs
-                    .commit_logs(args.leader_commit_length as usize)
-                    .map(Clone::clone);
+                let logs = handle.logs.commit_logs(args.leader_commit_length as usize);
                 Handle::apply_messages(&mut handle.apply_ch, logs).await;
                 Some(match_length)
             } else {

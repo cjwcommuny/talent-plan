@@ -10,9 +10,10 @@
 
 ## TODO
 
-- [] refactor code to make it typesafe, e.g. cannot construct `Role` arbitrarily.
-- [] attach `node_id` to futures/channels
-- [] use type system to guarantee the Leader Append-Only 
+- [ ] refactor code to make it typesafe, e.g. cannot construct `Role` arbitrarily.
+- [x] attach `node_id` to futures/channels
+- [ ] use type system to guarantee the Leader Append-Only 
+- [x] `LogEntry` doesn't need `index`
 
 This is a series of labs on a key/value storage system built with the Raft
 consensus algorithm. These labs are derived from the [lab2:raft][6824lab2] and

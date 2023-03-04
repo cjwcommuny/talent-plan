@@ -21,20 +21,13 @@ pub mod raftpb {
     /// Google's Protobuf is shit, which cannot handle sum type well.
     #[derive(Clone, PartialEq, Eq, prost::Message)]
     pub struct LogEntryProst {
-        // ApplyMsg
+        /// `LogKind`
         #[prost(bool, tag = "1")]
         pub is_command: bool,
-        #[prost(uint64, tag = "2")]
-        pub term: u64,
-
-        #[prost(bytes, tag = "3")]
+        #[prost(bytes, tag = "2")]
         pub data: Vec<u8>,
-
-        // LogStateProst
-        #[prost(uint32, tag = "4")]
-        pub last_log_index: u32,
-        #[prost(uint64, tag = "5")]
-        pub last_log_term: u64,
+        #[prost(uint64, tag = "3")]
+        pub term: u64,
     }
 
     ///   Example RequestVote RPC reply structure.
