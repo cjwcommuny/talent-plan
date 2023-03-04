@@ -67,7 +67,7 @@ impl State {
     }
 }
 
-type NodeId = usize;
+pub type NodeId = usize;
 type TermId = u64;
 
 // A single Raft peer.
@@ -258,7 +258,7 @@ impl Node {
         })
         // The test code uses indices starting from 1, while the implementation uses indices starting from 0.
         .map(|option_tuple| option_tuple.map(|(index, term)| (index + 1, term)))
-        .map_err(Error::Rpc)
+        .map_err(|e| Error::Rpc(e, self.raft.node_id))
         .and_then(|result| result.ok_or(Error::NotLeader))
     }
 

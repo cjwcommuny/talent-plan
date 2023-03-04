@@ -35,7 +35,7 @@ impl Candidate {
                 .map(|node_id| {
                     peers[node_id]
                         .request_vote(&args)
-                        .map(|r| r.map_err(Error::Rpc))
+                        .map(move |r| r.map_err(|e| Error::Rpc(e, node_id)))
                 })
                 .collect()
         };

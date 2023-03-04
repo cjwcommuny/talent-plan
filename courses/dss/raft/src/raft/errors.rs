@@ -1,10 +1,11 @@
+use crate::raft::NodeId;
 use std::{error, fmt, result};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Encode(labcodec::EncodeError),
     Decode(labcodec::DecodeError),
-    Rpc(labrpc::Error),
+    Rpc(labrpc::Error, NodeId),
     NotLeader,
 }
 
@@ -19,7 +20,7 @@ impl error::Error for Error {
         match *self {
             Self::Encode(ref e) => Some(e),
             Self::Decode(ref e) => Some(e),
-            Self::Rpc(ref e) => Some(e),
+            Self::Rpc(ref e, _) => Some(e),
             Self::NotLeader => None,
         }
     }

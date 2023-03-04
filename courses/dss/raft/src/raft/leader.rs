@@ -5,11 +5,12 @@ use crate::raft::inner::{Handle, LocalTask};
 use crate::raft::leader::AppendEntriesResult::{Commit, FoundLargerTerm, Retry};
 use crate::raft::role::Role;
 use crate::raft::{ApplyMsg, NodeId, TermId};
-use futures::{stream::FuturesUnordered, StreamExt};
+use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use std::future::Future;
 
 use std::time::Duration;
 
+use crate::raft;
 use crate::raft::follower::Follower;
 use tokio::select;
 use tokio::time::interval;
@@ -162,7 +163,7 @@ async fn try_commit_logs(leader: &Leader, handle: &mut Handle) {
     Handle::apply_messages(&mut handle.apply_ch, messages).await
 }
 
-type ReplicateLogFuture = impl Future<Output = Result<AppendEntriesReply, labrpc::Error>>;
+type ReplicateLogFuture = impl Future<Output = raft::Result<AppendEntriesReply>>;
 
 #[instrument(skip(handle), level = "debug")]
 fn send_append_entries(
@@ -181,7 +182,9 @@ fn send_append_entries(
         leader_commit_length: handle.logs.get_commit_length() as u64,
     };
     debug!(?handle, ?args);
-    handle.peers[node_id].append_entries(&args)
+    handle.peers[node_id]
+        .append_entries(&args)
+        .map(move |result| result.map_err(|e| raft::Error::Rpc(e, node_id)))
 }
 
 fn replicate_log<'a>(
