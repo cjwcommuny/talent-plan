@@ -10,7 +10,7 @@
 
 ## TODO
 
-- [ ] refactor code to make it typesafe, e.g. cannot construct `Role` arbitrarily.
+- [x] refactor code to make it typesafe, e.g. cannot construct `Role` arbitrarily.
 - [x] attach `node_id` to futures/channels
 - [ ] use type system to guarantee the Leader Append-Only 
 - [x] `LogEntry` doesn't need `index`

@@ -1,4 +1,5 @@
 use crate::raft::role::Role;
+use election::Election;
 use futures::channel::oneshot::Canceled;
 use futures::TryFutureExt;
 use inner::{Handle, RemoteTask};
@@ -17,6 +18,7 @@ mod candidate;
 mod common;
 #[cfg(test)]
 pub mod config;
+mod election;
 pub mod errors;
 mod follower;
 mod inner;
@@ -31,7 +33,7 @@ use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
 
-use crate::raft::inner::{Config, Election, Inner, LocalTask};
+use crate::raft::inner::{Config, Inner, LocalTask};
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
 /// server, via the `apply_ch` passed to `Raft::new`.

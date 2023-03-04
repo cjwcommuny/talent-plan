@@ -3,6 +3,7 @@ use crate::proto::raftpb::{
     AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply,
 };
 use std::fmt::{Debug, Formatter};
+
 use std::ops::Range;
 
 use crate::raft::persister::Persister;
@@ -14,7 +15,8 @@ use num::integer::div_ceil;
 use rand::RngCore;
 
 use crate::raft::logs::Logs;
-use assert2::assert;
+
+use crate::raft::election::Election;
 use tokio::sync::{mpsc, oneshot};
 use tracing::instrument;
 
@@ -196,25 +198,4 @@ pub enum LocalTask {
     GetTerm(oneshot::Sender<TermId>),
     CheckLeader(oneshot::Sender<bool>),
     Shutdown(oneshot::Sender<()>),
-}
-
-#[derive(Default, Debug)]
-pub struct Election {
-    term: TermId,
-    pub voted_for: Option<NodeId>,
-}
-
-impl Election {
-    pub fn get_current_term(&self) -> TermId {
-        self.term
-    }
-
-    pub fn update_current_term(&mut self, new_term: TermId) {
-        assert!(new_term >= self.term);
-        self.term = new_term;
-    }
-
-    pub fn increment_term(&mut self) {
-        self.term += 1;
-    }
 }
