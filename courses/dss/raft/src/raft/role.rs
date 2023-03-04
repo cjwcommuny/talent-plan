@@ -114,7 +114,7 @@ impl Role {
                 match_length,
                 node_id: handle.node_id as u32,
             };
-            let new_role = Role::Follower(Follower);
+            let new_role = Role::Follower(Follower::default());
             (reply, new_role)
         }
     }

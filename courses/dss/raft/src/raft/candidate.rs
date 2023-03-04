@@ -15,10 +15,15 @@ use tokio::select;
 use tokio::time::sleep;
 use tracing::{debug, error, instrument};
 
+/// make the constructor private
 #[derive(Debug, Default)]
-pub struct Candidate;
+pub struct Candidate(());
 
 impl Candidate {
+    fn new() -> Self {
+        Self(())
+    }
+
     #[instrument(name = "Candidate::progress", skip_all, ret, fields(node_id = handle.node_id, term = handle.election.get_current_term()), level = "debug")]
     pub(crate) async fn progress(self, handle: &mut Handle) -> Role {
         handle.election.increment_term();
@@ -48,9 +53,9 @@ impl Candidate {
         futures::pin_mut!(election_timeout);
         while votes_received.len() < handle.get_majority_threshold() {
             select! {
-                _ = election_timeout.next() => return Role::Candidate(Candidate),
+                _ = election_timeout.next() => return Role::Candidate(self),
                 Some(task) = handle.remote_task_receiver.recv() => {
-                    let RemoteTaskResult { success, new_role } = task.handle(Role::Candidate(Candidate), handle).await;
+                    let RemoteTaskResult { success, new_role } = task.handle(Role::Candidate(Candidate::new()), handle).await;
                     if success {
                         return new_role;
                     }
@@ -86,6 +91,16 @@ impl Candidate {
                 }
             }
         }
-        Role::Leader(Leader::new(handle.logs.get_log_len(), handle.peers.len()))
+        Role::Leader(Leader::from(
+            self,
+            handle.logs.get_log_len(),
+            handle.peers.len(),
+        ))
+    }
+}
+
+impl From<Follower> for Candidate {
+    fn from(_: Follower) -> Self {
+        Self::new()
     }
 }

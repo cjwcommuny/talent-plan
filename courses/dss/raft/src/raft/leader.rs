@@ -11,6 +11,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use crate::raft;
+use crate::raft::candidate::Candidate;
 use crate::raft::follower::Follower;
 use tokio::select;
 use tokio::time::interval;
@@ -32,7 +33,7 @@ pub struct Leader {
 }
 
 impl Leader {
-    pub fn new(log_length: usize, num_servers: usize) -> Self {
+    pub fn from(_: Candidate, log_length: usize, num_servers: usize) -> Self {
         Leader {
             next_index: vec![log_length; num_servers],
             match_length: vec![0; num_servers],

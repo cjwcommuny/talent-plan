@@ -1,5 +1,5 @@
-use crate::raft::candidate::Candidate;
 use crate::raft::inner::{Handle, LocalTask, RemoteTaskResult};
+
 use crate::raft::role::Role;
 use futures::{pin_mut, stream, StreamExt};
 use rand::Rng;
@@ -9,7 +9,7 @@ use tokio::time::sleep;
 use tracing::instrument;
 
 #[derive(Debug, Default)]
-pub struct Follower;
+pub struct Follower(());
 
 impl Follower {
     #[instrument(name = "Follower::progress", skip_all, ret, fields(node_id = handle.node_id, term = handle.election.get_current_term()), level = "debug")]
@@ -24,7 +24,7 @@ impl Follower {
             select! {
                 _ = failure_timer.next() => {
                     debug!("failure timer timeout, transit to Candidate");
-                    break Role::Candidate(Candidate);
+                    break Role::Candidate(self.into());
                 }
                 Some(task) = handle.local_task_receiver.recv() => {
                     if match task {
@@ -42,7 +42,7 @@ impl Follower {
                 }
                 Some(task) = handle.remote_task_receiver.recv() => {
                     debug!("{:?}", handle);
-                    let RemoteTaskResult { success, new_role } = task.handle(Role::Follower(Follower), handle).await;
+                    let RemoteTaskResult { success, new_role } = task.handle(Role::Follower(Follower::default()), handle).await;
                     if success {
                         break new_role; // restart failure timer
                     }
