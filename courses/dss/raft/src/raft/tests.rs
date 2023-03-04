@@ -556,11 +556,7 @@ fn test_count_2b() {
     let _subscriber = init_logger(function_name!());
     const SERVERS: usize = 3;
     fn rpcs(cfg: &Config) -> usize {
-        let mut n: usize = 0;
-        for j in 0..SERVERS {
-            n += cfg.rpc_count(j);
-        }
-        n
+        (0..SERVERS).map(|j| cfg.rpc_count(j)).sum()
     }
 
     let mut cfg = Config::new(SERVERS);
