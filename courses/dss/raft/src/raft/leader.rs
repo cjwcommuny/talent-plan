@@ -168,9 +168,9 @@ type ReplicateLogFuture = impl Future<Output = raft::Result<AppendEntriesReply>>
 
 #[instrument(skip(handle), level = "debug")]
 fn send_append_entries(
+    node_id: NodeId,
     leader: &Leader,
     handle: &Handle,
-    node_id: NodeId,
     entries: Vec<LogEntryProst>,
 ) -> ReplicateLogFuture {
     let log_length = leader.next_index[node_id];
@@ -200,7 +200,7 @@ fn replicate_log<'a>(
             .map(Clone::clone)
             .map(Into::into)
             .collect();
-        send_append_entries(leader, handle, node_id, entries)
+        send_append_entries(node_id, leader, handle, entries)
     }
 }
 
