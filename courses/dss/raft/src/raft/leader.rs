@@ -44,7 +44,7 @@ impl Leader {
     #[instrument(name = "Leader::progress", skip_all, fields(node_id = handle.node_id, term = handle.election.get_current_term()), level = "debug")]
     pub(crate) async fn progress(mut self, handle: &mut Handle) -> Role {
         let mut rpc_replies: FuturesUnordered<_> = handle
-            .get_node_ids_except_mine()
+            .node_ids_except_mine()
             .map(replicate_log(&self, handle))
             .collect();
         let mut heartbeat_timer = interval(Duration::from_millis(handle.config.heartbeat_cycle));
@@ -52,12 +52,12 @@ impl Leader {
             select! {
                 _ = heartbeat_timer.tick() => {
                     rpc_replies
-                        .extend(handle.get_node_ids_except_mine().map(replicate_log(&self, handle)))
+                        .extend(handle.node_ids_except_mine().map(replicate_log(&self, handle)))
                 }
                 Some(result) = rpc_replies.next() => {
                     match result {
                         Ok(reply) => {
-                            match Self::on_receive_append_entries_reply(reply, handle.election.get_current_term()) {
+                            match Self::on_receive_append_entries_reply(reply, handle.election.current_term()) {
                                 AppendEntriesResult::Commit{ follower_id, match_length } => {
                                     self.next_index[follower_id] = match_length;
                                     self.match_length[follower_id] = match_length;
@@ -82,13 +82,13 @@ impl Leader {
                 Some(task) = handle.local_task_receiver.recv() => {
                     match task {
                         LocalTask::AppendEntries { data, sender } => {
-                            let current_term = handle.election.get_current_term();
+                            let current_term = handle.election.current_term();
                             let index = handle.logs.add_log(LogKind::Command, data, current_term);
                             self.match_length[handle.node_id] = index + 1;
                             sender.send(Some((index as u64, current_term))).unwrap();
-                            rpc_replies.extend(handle.get_node_ids_except_mine().map(replicate_log(&self, handle)));
+                            rpc_replies.extend(handle.node_ids_except_mine().map(replicate_log(&self, handle)));
                         }
-                        LocalTask::GetTerm(sender) => sender.send(handle.election.get_current_term()).unwrap(),
+                        LocalTask::GetTerm(sender) => sender.send(handle.election.current_term()).unwrap(),
                         LocalTask::CheckLeader(sender) => sender.send(true).unwrap(),
                         LocalTask::Shutdown(sender) => {
                             info!("shutdown");
@@ -148,7 +148,7 @@ enum AppendEntriesResult {
 
 #[instrument(level = "debug")]
 async fn try_commit_logs(leader: &Leader, handle: &mut Handle) {
-    let commit_threshold = handle.get_majority_threshold();
+    let commit_threshold = handle.majority_threshold();
     let compute_acks = |length_threshold| {
         let acks = leader
             .match_length
@@ -158,9 +158,9 @@ async fn try_commit_logs(leader: &Leader, handle: &mut Handle) {
         acks
     };
     // find the largest length which satisfies the commit threshold
-    let new_commit_length = (handle.logs.get_commit_length()..handle.logs.get_log_len())
+    let new_commit_length = (handle.logs.commit_len()..handle.logs.len())
         .find(|match_length| compute_acks(*match_length) < commit_threshold)
-        .unwrap_or(handle.logs.get_log_len());
+        .unwrap_or(handle.logs.len());
     let messages = handle.logs.commit_logs(new_commit_length);
     Handle::apply_messages(&mut handle.apply_ch, messages).await
 }
@@ -175,13 +175,13 @@ fn send_append_entries(
     entries: Vec<LogEntryProst>,
 ) -> ReplicateLogFuture {
     let log_length = leader.next_index[node_id];
-    let log_state = handle.logs.get_log_state_before(log_length).map(Into::into);
+    let log_state = handle.logs.log_state_before(log_length).map(Into::into);
     let args = AppendEntriesArgs {
-        term: handle.election.get_current_term(),
+        term: handle.election.current_term(),
         leader_id: handle.node_id as u64,
         log_state,
         entries,
-        leader_commit_length: handle.logs.get_commit_length() as u64,
+        leader_commit_length: handle.logs.commit_len() as u64,
     };
     debug!(?handle, ?args);
     handle.peers[node_id]
@@ -197,7 +197,7 @@ fn replicate_log<'a>(
         let log_length = leader.next_index[node_id];
         let entries: Vec<LogEntryProst> = handle
             .logs
-            .get_tail(log_length)
+            .tail(log_length)
             .map(Clone::clone)
             .map(Into::into)
             .collect();

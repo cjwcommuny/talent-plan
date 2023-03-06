@@ -79,7 +79,7 @@ impl Debug for Handle {
 }
 
 impl Handle {
-    pub fn get_node_ids_except_mine(&self) -> impl Iterator<Item = NodeId> {
+    pub fn node_ids_except_mine(&self) -> impl Iterator<Item = NodeId> {
         let me = self.node_id;
         (0..self.peers.len()).filter(move |node_id| *node_id != me)
     }
@@ -98,7 +98,7 @@ impl Handle {
         }
     }
 
-    pub fn get_majority_threshold(&self) -> usize {
+    pub fn majority_threshold(&self) -> usize {
         div_ceil(self.peers.len() + 1, 2)
     }
 }

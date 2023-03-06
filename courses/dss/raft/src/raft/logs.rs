@@ -32,11 +32,11 @@ impl Debug for Logs {
 }
 
 impl Logs {
-    pub fn get_log_len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.logs.len()
     }
 
-    pub fn get_commit_length(&self) -> usize {
+    pub fn commit_len(&self) -> usize {
         self.commit_length
     }
 
@@ -50,18 +50,18 @@ impl Logs {
         self.logs.get(index)
     }
 
-    pub fn get_tail(&self, tail_begin: usize) -> impl Iterator<Item = &LogEntry> {
+    pub fn tail(&self, tail_begin: usize) -> impl Iterator<Item = &LogEntry> {
         assert!(tail_begin <= self.logs.len());
         self.logs[tail_begin..].iter()
     }
 
-    pub fn get_log_state(&self) -> Option<LogState> {
+    pub fn log_state(&self) -> Option<LogState> {
         last_index_and_element(self.logs.as_slice())
             .map(|(index, entry)| LogState::new(index, entry.term))
     }
 
     /// return `LogState` of `self.log[..length]`
-    pub fn get_log_state_before(&self, index: usize) -> Option<LogState> {
+    pub fn log_state_before(&self, index: usize) -> Option<LogState> {
         assert!(index <= self.logs.len());
         index
             .checked_sub(1)

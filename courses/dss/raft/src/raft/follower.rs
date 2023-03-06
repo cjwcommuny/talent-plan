@@ -29,7 +29,7 @@ impl Follower {
                 Some(task) = handle.local_task_receiver.recv() => {
                     if match task {
                         LocalTask::AppendEntries { sender, .. } => sender.send(None).ok(), // not leader
-                        LocalTask::GetTerm(sender) => sender.send(handle.election.get_current_term()).ok(),
+                        LocalTask::GetTerm(sender) => sender.send(handle.election.current_term()).ok(),
                         LocalTask::CheckLeader(sender) => sender.send(false).ok(),
                         LocalTask::Shutdown(sender) => {
                             info!("shutdown");

@@ -8,7 +8,7 @@ pub struct Election {
 }
 
 impl Election {
-    pub fn get_current_term(&self) -> TermId {
+    pub fn current_term(&self) -> TermId {
         self.term
     }
 

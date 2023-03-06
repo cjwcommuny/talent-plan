@@ -37,25 +37,25 @@ impl Role {
         args: &RequestVoteArgs,
     ) -> (RequestVoteReply, Role) {
         let log_ok = {
-            let self_log_state = handle.logs.get_log_state();
+            let self_log_state = handle.logs.log_state();
             let candidate_log_state: Option<LogState> = args.log_state.map(Into::into);
             candidate_log_state >= self_log_state
         };
         let term_ok = {
-            let current_term = handle.election.get_current_term();
+            let current_term = handle.election.current_term();
             let voted_for = handle.election.voted_for;
             args.term > current_term
                 || (args.term == current_term
                     && (voted_for.is_none() || voted_for == Some(args.candidate_id as usize)))
         };
         let vote_granted = log_ok && term_ok;
-        let new_role = if vote_granted || args.term > handle.election.get_current_term() {
+        let new_role = if vote_granted || args.term > handle.election.current_term() {
             Role::Follower(Follower::default())
         } else {
             self
         };
         let reply = RequestVoteReply {
-            term: max(handle.election.get_current_term(), args.term),
+            term: max(handle.election.current_term(), args.term),
             node_id: handle.node_id as u32,
             vote_granted,
         };
@@ -65,7 +65,7 @@ impl Role {
         if vote_granted {
             handle.election.voted_for = Some(args.candidate_id as usize);
         }
-        if args.term > handle.election.get_current_term() {
+        if args.term > handle.election.current_term() {
             handle.election.update_current_term(args.term);
         }
         // ---
@@ -78,10 +78,10 @@ impl Role {
         handle: &mut Handle,
         args: AppendEntriesArgs,
     ) -> (AppendEntriesReply, Role) {
-        if args.term < handle.election.get_current_term() {
+        if args.term < handle.election.current_term() {
             handle.election.voted_for = None;
             let reply = AppendEntriesReply {
-                term: handle.election.get_current_term(),
+                term: handle.election.current_term(),
                 match_length: None,
                 node_id: handle.node_id as u32,
             };
@@ -110,7 +110,7 @@ impl Role {
             };
             handle.election.update_current_term(args.term);
             let reply = AppendEntriesReply {
-                term: handle.election.get_current_term(),
+                term: handle.election.current_term(),
                 match_length,
                 node_id: handle.node_id as u32,
             };

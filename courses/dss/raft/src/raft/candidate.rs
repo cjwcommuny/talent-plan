@@ -31,12 +31,12 @@ impl Candidate {
         let peers = &handle.peers;
         let mut replies: FuturesUnordered<_> = {
             let args = RequestVoteArgs {
-                log_state: handle.logs.get_log_state().map(Into::into),
-                term: handle.election.get_current_term(),
+                log_state: handle.logs.log_state().map(Into::into),
+                term: handle.election.current_term(),
                 candidate_id: handle.node_id as u32,
             };
             handle
-                .get_node_ids_except_mine()
+                .node_ids_except_mine()
                 .map(|node_id| {
                     peers[node_id]
                         .request_vote(&args)
@@ -51,7 +51,7 @@ impl Candidate {
         )));
         let mut votes_received = HashSet::from([handle.node_id as u32]);
         futures::pin_mut!(election_timeout);
-        while votes_received.len() < handle.get_majority_threshold() {
+        while votes_received.len() < handle.majority_threshold() {
             select! {
                 _ = election_timeout.next() => return Role::Candidate(self),
                 Some(task) = handle.remote_task_receiver.recv() => {
@@ -63,7 +63,7 @@ impl Candidate {
                 Some(task) = handle.local_task_receiver.recv() => {
                     match task {
                         LocalTask::AppendEntries { sender, .. } => sender.send(None).unwrap(),
-                        LocalTask::GetTerm(sender) => sender.send(handle.election.get_current_term()).unwrap(),
+                        LocalTask::GetTerm(sender) => sender.send(handle.election.current_term()).unwrap(),
                         LocalTask::CheckLeader(sender) => sender.send(false).unwrap(),
                         LocalTask::Shutdown(sender) => {
                             info!("shutdown");
@@ -73,7 +73,7 @@ impl Candidate {
                     }
                 }
                 Some(reply_result) = replies.next() => {
-                    let current_term = handle.election.get_current_term();
+                    let current_term = handle.election.current_term();
                     match reply_result {
                         Ok(reply) => {
                             if reply.term == current_term && reply.vote_granted {
@@ -93,7 +93,7 @@ impl Candidate {
         }
         Role::Leader(Leader::from(
             self,
-            handle.logs.get_log_len(),
+            handle.logs.len(),
             handle.peers.len(),
         ))
     }
