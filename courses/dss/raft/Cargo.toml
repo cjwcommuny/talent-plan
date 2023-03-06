@@ -25,6 +25,7 @@ num = "0.4"
 either = "1.6"
 assert2 = "0.3"
 function_name = "0.2"
+derive-new = "0.5"
 
 labcodec = { path = "../labcodec" }
 labrpc = { path = "../labrpc" }

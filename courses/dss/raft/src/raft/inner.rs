@@ -4,6 +4,7 @@ use crate::proto::raftpb::{
 };
 use std::fmt::{Debug, Formatter};
 
+use derive_new::new;
 use std::ops::Range;
 
 use crate::raft::persister::Persister;
@@ -37,16 +38,13 @@ impl Default for Config {
     }
 }
 
+#[derive(new)]
 pub struct Inner {
     role: Option<Role>,
     handle: Handle,
 }
 
 impl Inner {
-    pub const fn new(role: Option<Role>, handle: Handle) -> Self {
-        Self { role, handle }
-    }
-
     pub async fn raft_main(&mut self) {
         while let role = self.role.take().unwrap() && !matches!(role, Role::Stop) {
             let new_role = role.progress(&mut self.handle).await;
@@ -55,6 +53,8 @@ impl Inner {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+#[derive(new)]
 pub struct Handle {
     pub node_id: usize,                // this peer's index into peers[]
     pub persister: Box<dyn Persister>, // Object to hold this peer's persisted state
@@ -79,33 +79,6 @@ impl Debug for Handle {
 }
 
 impl Handle {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        node_id: usize,
-        persister: Box<dyn Persister>,
-        election: Election,
-        logs: Logs,
-        apply_ch: UnboundedSender<ApplyMsg>,
-        peers: Vec<RaftClient>,
-        remote_task_receiver: mpsc::Receiver<RemoteTask>,
-        local_task_receiver: mpsc::Receiver<LocalTask>,
-        random_generator: Box<dyn RngCore + Send>,
-        config: Config,
-    ) -> Self {
-        Self {
-            node_id,
-            persister,
-            election,
-            logs,
-            apply_ch,
-            peers,
-            remote_task_receiver,
-            local_task_receiver,
-            random_generator,
-            config,
-        }
-    }
-
     pub fn get_node_ids_except_mine(&self) -> impl Iterator<Item = NodeId> {
         let me = self.node_id;
         (0..self.peers.len()).filter(move |node_id| *node_id != me)
@@ -152,15 +125,10 @@ impl Debug for RemoteTask {
     }
 }
 
+#[derive(new)]
 pub struct RemoteTaskResult {
     pub success: bool,
     pub new_role: Role,
-}
-
-impl RemoteTaskResult {
-    pub const fn new(success: bool, new_role: Role) -> Self {
-        Self { success, new_role }
-    }
 }
 
 impl RemoteTask {

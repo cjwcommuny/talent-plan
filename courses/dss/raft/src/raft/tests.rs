@@ -97,7 +97,11 @@ fn test_reelection_2a() {
 
     // if there's no quorum, no leader should
     // be elected.
-    info!("disconnect leader2: {}, leader2 next {}", leader2, (leader2 + 1) % servers);
+    info!(
+        "disconnect leader2: {}, leader2 next {}",
+        leader2,
+        (leader2 + 1) % servers
+    );
     cfg.disconnect(leader2);
     cfg.disconnect((leader2 + 1) % servers);
     thread::sleep(2 * RAFT_ELECTION_TIMEOUT);

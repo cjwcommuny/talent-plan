@@ -8,6 +8,7 @@ use crate::raft::{ApplyMsg, NodeId, TermId};
 use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
 use std::future::Future;
 
+use derive_new::new;
 use std::time::Duration;
 
 use crate::raft;
@@ -204,21 +205,11 @@ fn replicate_log<'a>(
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, new)]
 pub struct LogEntry {
     log_kind: LogKind,
     data: Vec<u8>,
     pub term: TermId,
-}
-
-impl LogEntry {
-    pub fn new(log_kind: LogKind, data: Vec<u8>, term: TermId) -> Self {
-        LogEntry {
-            log_kind,
-            data,
-            term,
-        }
-    }
 }
 
 impl From<(usize, LogEntry)> for ApplyMsg {
@@ -280,16 +271,10 @@ impl From<LogEntry> for LogEntryProst {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Copy, Clone)]
+#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Copy, Clone, new)]
 pub struct LogState {
     pub index: usize,
     pub term: TermId,
-}
-
-impl LogState {
-    pub fn new(index: usize, term: TermId) -> Self {
-        LogState { term, index }
-    }
 }
 
 impl From<LogStateProst> for LogState {
