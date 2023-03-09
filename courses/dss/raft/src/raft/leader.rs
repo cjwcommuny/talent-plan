@@ -1,7 +1,7 @@
 use crate::proto::raftpb::{AppendEntriesArgs, AppendEntriesReply};
 use crate::proto::raftpb::{LogEntryProst, LogStateProst};
+use crate::raft::inner::LocalTask;
 use crate::raft::inner::RemoteTaskResult;
-use crate::raft::inner::{Handle, LocalTask};
 use crate::raft::leader::AppendEntriesResult::{Commit, FoundLargerTerm, Retry};
 use crate::raft::role::Role;
 use crate::raft::{ApplyMsg, NodeId, TermId};
@@ -14,6 +14,7 @@ use std::time::Duration;
 use crate::raft;
 use crate::raft::candidate::Candidate;
 use crate::raft::follower::Follower;
+use crate::raft::handle::Handle;
 use tokio::select;
 use tokio::time::interval;
 use tracing::{info, instrument, trace, trace_span, warn};

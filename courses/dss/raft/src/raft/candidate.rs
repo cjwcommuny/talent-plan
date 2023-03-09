@@ -1,7 +1,7 @@
 use crate::proto::raftpb::RequestVoteArgs;
 use crate::raft::errors::Error;
+use crate::raft::inner::LocalTask;
 use crate::raft::inner::RemoteTaskResult;
-use crate::raft::inner::{Handle, LocalTask};
 use crate::raft::leader::Leader;
 use crate::raft::role::Role;
 use futures::{stream, stream::FuturesUnordered, FutureExt, StreamExt};
@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use std::fmt::Debug;
 
 use crate::raft::follower::Follower;
+use crate::raft::handle::Handle;
 use rand::Rng;
 use std::time::Duration;
 use tokio::select;

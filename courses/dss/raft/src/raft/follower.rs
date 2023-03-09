@@ -1,5 +1,6 @@
-use crate::raft::inner::{Handle, LocalTask, RemoteTaskResult};
+use crate::raft::inner::{LocalTask, RemoteTaskResult};
 
+use crate::raft::handle::Handle;
 use crate::raft::role::Role;
 use futures::{pin_mut, stream, StreamExt};
 use rand::Rng;

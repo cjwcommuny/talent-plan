@@ -9,7 +9,7 @@ use crate::raft::candidate::Candidate;
 use crate::raft::common::side_effect;
 use crate::raft::follower::Follower;
 
-use crate::raft::inner::Handle;
+use crate::raft::handle::Handle;
 use crate::raft::leader::{Leader, LogEntry, LogState};
 use crate::raft::NodeId;
 
