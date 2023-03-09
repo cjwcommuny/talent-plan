@@ -1,9 +1,12 @@
 use crate::proto::raftpb::raft::Client as RaftClient;
-use crate::raft::election::Election;
-use crate::raft::inner::{Config, LocalTask, PersistentState, RemoteTask};
-use crate::raft::logs::Logs;
+use crate::proto::raftpb::LogEntryProst;
+use crate::raft::handle::election::Election;
+use crate::raft::handle::Logs;
+use crate::raft::inner::{Config, LocalTask, RemoteTask};
+use crate::raft::leader::{LogEntry, LogKind};
 use crate::raft::persister::Persister;
-use crate::raft::{ApplyMsg, NodeId};
+use crate::raft::{ApplyMsg, NodeId, TermId};
+use derive_new::new;
 use futures::channel::mpsc::UnboundedSender;
 use futures::SinkExt;
 use num::integer::div_ceil;
@@ -37,7 +40,29 @@ impl Debug for Handle {
     }
 }
 
+/// persistent relevant methods
 impl Handle {
+    pub fn update_current_term(&mut self, new_term: TermId) {
+        self.election.update_current_term(new_term);
+        self.persist();
+    }
+
+    pub fn increment_term(&mut self) {
+        self.election.increment_term();
+        self.persist();
+    }
+
+    pub fn add_log(&mut self, log_kind: LogKind, data: Vec<u8>, term: TermId) -> usize {
+        let result = self.logs.add_log(log_kind, data, term);
+        self.persist();
+        result
+    }
+
+    pub fn update_log_tail(&mut self, tail_begin: usize, entries: Vec<LogEntry>) {
+        self.logs.update_log_tail(tail_begin, entries);
+        self.persist();
+    }
+
     pub fn restore(data: Vec<u8>) -> Option<PersistentState> {
         if data.is_empty() {
             None
@@ -67,7 +92,9 @@ impl Handle {
                 .collect(),
         )
     }
+}
 
+impl Handle {
     pub fn node_ids_except_mine(&self) -> impl Iterator<Item = NodeId> {
         let me = self.node_id;
         (0..self.peers.len()).filter(move |node_id| *node_id != me)
@@ -90,4 +117,14 @@ impl Handle {
     pub fn majority_threshold(&self) -> usize {
         div_ceil(self.peers.len() + 1, 2)
     }
+}
+
+#[derive(prost::Message, new)]
+pub struct PersistentState {
+    #[prost(uint64, tag = "1")]
+    pub term: u64,
+    #[prost(uint32, optional, tag = "2")]
+    pub voted_for: Option<u32>,
+    #[prost(message, repeated, tag = "3")]
+    pub log: Vec<LogEntryProst>,
 }

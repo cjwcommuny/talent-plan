@@ -1,13 +1,13 @@
 use crate::proto::raftpb::{
-    AppendEntriesArgs, AppendEntriesReply, LogEntryProst, RequestVoteArgs, RequestVoteReply,
+    AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply,
 };
-use std::fmt::{Debug, Formatter};
-use derive_new::new;
-use std::ops::Range;
+use crate::raft::handle::Handle;
 use crate::raft::role::Role;
 use crate::raft::TermId;
+use derive_new::new;
+use std::fmt::{Debug, Formatter};
+use std::ops::Range;
 use tokio::sync::oneshot;
-use crate::raft::handle::Handle;
 
 pub struct Config {
     pub heartbeat_cycle: u64,
@@ -104,14 +104,4 @@ pub enum LocalTask {
     GetTerm(oneshot::Sender<TermId>),
     CheckLeader(oneshot::Sender<bool>),
     Shutdown(oneshot::Sender<()>),
-}
-
-#[derive(prost::Message, new)]
-pub struct PersistentState {
-    #[prost(uint64, tag = "1")]
-    pub term: u64,
-    #[prost(uint32, optional, tag = "2")]
-    pub voted_for: Option<u32>,
-    #[prost(message, repeated, tag = "3")]
-    pub log: Vec<LogEntryProst>,
 }

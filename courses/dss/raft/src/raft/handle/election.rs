@@ -13,12 +13,12 @@ impl Election {
         self.term
     }
 
-    pub fn update_current_term(&mut self, new_term: TermId) {
+    pub(in crate::raft::handle) fn update_current_term(&mut self, new_term: TermId) {
         assert!(new_term >= self.term);
         self.term = new_term;
     }
 
-    pub fn increment_term(&mut self) {
+    pub(in crate::raft::handle) fn increment_term(&mut self) {
         self.term += 1;
     }
 }

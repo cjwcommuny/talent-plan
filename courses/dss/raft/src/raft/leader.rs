@@ -73,7 +73,7 @@ impl Leader {
                                     rpc_replies.push(replicate_log(&self, handle)(node_id));
                                 }
                                 AppendEntriesResult::FoundLargerTerm(new_term) => {
-                                    handle.election.update_current_term(new_term);
+                                    handle.update_current_term(new_term);
                                     break Role::Follower(Follower::default())
                                 }
                             }
@@ -86,7 +86,7 @@ impl Leader {
                         LocalTask::AppendEntries { data, sender } => {
                             trace!("term={}, local task append entries", handle.election.current_term());
                             let current_term = handle.election.current_term();
-                            let index = handle.logs.add_log(LogKind::Command, data, current_term);
+                            let index = handle.add_log(LogKind::Command, data, current_term);
                             self.match_length[handle.node_id] = index + 1;
                             sender.send(Some((index as u64, current_term))).unwrap();
                             rpc_replies.extend(handle.node_ids_except_mine().map(replicate_log(&self, handle)));

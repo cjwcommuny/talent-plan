@@ -1,11 +1,11 @@
 use crate::raft::role::Role;
-use election::Election;
 use futures::channel::oneshot::Canceled;
 use futures::TryFutureExt;
+use handle::election::Election;
 use handle::Handle;
+use handle::Logs;
 use inner::RemoteTask;
 use labrpc::Error::{Other, Recv};
-use logs::Logs;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use std::fmt::Debug;
@@ -18,13 +18,11 @@ mod candidate;
 mod common;
 #[cfg(test)]
 pub mod config;
-mod election;
 pub mod errors;
 mod follower;
 mod handle;
 mod inner;
 mod leader;
-mod logs;
 pub mod persister;
 mod role;
 #[cfg(test)]

@@ -47,7 +47,12 @@ impl Logs {
         self.commit_length
     }
 
-    pub fn add_log(&mut self, log_kind: LogKind, data: Vec<u8>, term: TermId) -> usize {
+    pub(in crate::raft::handle) fn add_log(
+        &mut self,
+        log_kind: LogKind,
+        data: Vec<u8>,
+        term: TermId,
+    ) -> usize {
         let index = self.logs.len();
         self.logs.push(LogEntry::new(log_kind, data, term));
         index
@@ -75,7 +80,11 @@ impl Logs {
             .map(|index| LogState::new(self.logs[index].term, index))
     }
 
-    pub fn update_log_tail(&mut self, tail_begin: usize, mut entries: Vec<LogEntry>) {
+    pub(in crate::raft::handle) fn update_log_tail(
+        &mut self,
+        tail_begin: usize,
+        mut entries: Vec<LogEntry>,
+    ) {
         assert!(
             tail_begin <= self.logs.len(),
             "{}, {}",

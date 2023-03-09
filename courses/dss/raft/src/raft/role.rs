@@ -70,7 +70,7 @@ impl Role {
                 handle.election.voted_for = Some(args.candidate_id as usize);
             }
             if args.term > handle.election.current_term() {
-                handle.election.update_current_term(args.term);
+                handle.update_current_term(args.term);
             }
         });
         result
@@ -109,14 +109,14 @@ impl Role {
                 let new_log_begin = local_log_state.map_or(0, |state| state.index + 1);
                 let entries: Vec<LogEntry> = args.entries.into_iter().map(Into::into).collect();
                 let match_length = (new_log_begin + entries.len()) as u64;
-                handle.logs.update_log_tail(new_log_begin, entries);
+                handle.update_log_tail(new_log_begin, entries);
                 let logs = handle.logs.commit_logs(args.leader_commit_length as usize);
                 Handle::apply_messages(&mut handle.apply_ch, logs).await;
                 Some(match_length)
             } else {
                 None
             };
-            handle.election.update_current_term(args.term);
+            handle.update_current_term(args.term);
             let reply = AppendEntriesReply {
                 term: handle.election.current_term(),
                 match_length,

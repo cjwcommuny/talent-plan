@@ -27,7 +27,7 @@ impl Candidate {
 
     pub(crate) async fn progress(self, handle: &mut Handle) -> Role {
         let _span = trace_span!("Candidate", node_id = handle.node_id).entered();
-        handle.election.increment_term();
+        handle.increment_term();
         handle.election.voted_for = Some(handle.node_id);
         let peers = &handle.peers;
         let mut replies: FuturesUnordered<_> = {
@@ -88,7 +88,7 @@ impl Candidate {
                             if reply.term == current_term && reply.vote_granted {
                                 votes_received.insert(reply.node_id);
                             } else if reply.term > current_term {
-                                handle.election.update_current_term(reply.term);
+                                handle.update_current_term(reply.term);
                                 handle.election.voted_for = None;
                                 return Role::Follower(Follower::default());
                             } else {
