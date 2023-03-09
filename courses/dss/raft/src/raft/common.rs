@@ -23,7 +23,7 @@ pub fn set_panic_with_log() {
             panic_info
                 .payload()
                 .downcast_ref::<&str>()
-                .map(|s| *s)
+                .copied()
                 .unwrap_or("<cause unknown>")
         });
 
