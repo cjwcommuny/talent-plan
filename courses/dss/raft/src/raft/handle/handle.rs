@@ -41,6 +41,9 @@ impl Debug for Handle {
 }
 
 /// persistent relevant methods
+/// We persist the states immediately after the state is mutated
+/// An alternative method of it is to persist until making an RPC call
+/// By batching the RPC call, we can save time of persisting
 impl Handle {
     pub fn update_current_term(&mut self, new_term: TermId) {
         self.election.update_current_term(new_term);

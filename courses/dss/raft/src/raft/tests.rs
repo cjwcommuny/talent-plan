@@ -691,7 +691,7 @@ fn test_count_2b() {
 
 #[test]
 #[named]
-fn test_persist1_2c() {
+fn test_persist_2c_1() {
     let _subscriber = init_logger(function_name!());
     let servers = 3;
     let mut cfg = Config::new(servers);
@@ -739,7 +739,7 @@ fn test_persist1_2c() {
 
 #[test]
 #[named]
-fn test_persist2_2c() {
+fn test_persist_2c_2() {
     let _subscriber = init_logger(function_name!());
     let servers = 5;
     let mut cfg = Config::new(servers);
@@ -787,7 +787,7 @@ fn test_persist2_2c() {
 
 #[test]
 #[named]
-fn test_persist3_2c() {
+fn test_persist_2c_3() {
     let _subscriber = init_logger(function_name!());
     let servers = 3;
     let mut cfg = Config::new(servers);
