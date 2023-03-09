@@ -1,11 +1,12 @@
 use std::cmp::max;
 
-use tracing::{debug, instrument};
+use tracing::{instrument, trace};
 
 use crate::proto::raftpb::{
     AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply,
 };
 use crate::raft::candidate::Candidate;
+use crate::raft::common::side_effect;
 use crate::raft::follower::Follower;
 
 use crate::raft::inner::Handle;
@@ -30,15 +31,18 @@ impl Role {
         }
     }
 
-    #[instrument(ret, level = "debug")]
+    #[instrument(skip_all, fields(node_id = handle.node_id), level = "trace")]
     pub fn request_vote(
         self,
-        handle: &mut Handle,
         args: &RequestVoteArgs,
+        handle: &mut Handle,
     ) -> (RequestVoteReply, Role) {
+        trace!(?args);
+        trace!(?handle);
         let log_ok = {
             let self_log_state = handle.logs.log_state();
             let candidate_log_state: Option<LogState> = args.log_state.map(Into::into);
+            trace!(?candidate_log_state, ?self_log_state);
             candidate_log_state >= self_log_state
         };
         let term_ok = {
@@ -49,6 +53,7 @@ impl Role {
                     && (voted_for.is_none() || voted_for == Some(args.candidate_id as usize)))
         };
         let vote_granted = log_ok && term_ok;
+        trace!(log_ok, term_ok, vote_granted);
         let new_role = if vote_granted || args.term > handle.election.current_term() {
             Role::Follower(Follower::default())
         } else {
@@ -60,25 +65,27 @@ impl Role {
             vote_granted,
         };
         let result = (reply, new_role);
-
-        // --- side effect
-        if vote_granted {
-            handle.election.voted_for = Some(args.candidate_id as usize);
-        }
-        if args.term > handle.election.current_term() {
-            handle.election.update_current_term(args.term);
-        }
-        // ---
+        side_effect(|| {
+            if vote_granted {
+                handle.election.voted_for = Some(args.candidate_id as usize);
+            }
+            if args.term > handle.election.current_term() {
+                handle.election.update_current_term(args.term);
+            }
+        });
         result
     }
 
-    #[instrument(skip(self), ret, level = "debug")]
+    #[instrument(skip_all, level = "trace")]
     pub async fn append_entries(
         self,
-        handle: &mut Handle,
         args: AppendEntriesArgs,
+        handle: &mut Handle,
     ) -> (AppendEntriesReply, Role) {
+        trace!(?args);
+        trace!(?handle);
         if args.term < handle.election.current_term() {
+            trace!("term_ok = false");
             handle.election.voted_for = None;
             let reply = AppendEntriesReply {
                 term: handle.election.current_term(),
@@ -87,17 +94,18 @@ impl Role {
             };
             (reply, self)
         } else {
+            trace!("term_ok = true");
             handle.election.voted_for = Some(args.leader_id as NodeId);
             let remote_log_state: Option<LogState> = args.log_state.map(Into::into);
             let local_log_state = remote_log_state.and_then(|remote_state| {
                 handle
                     .logs
                     .get(remote_state.index)
-                    .map(|entry| LogState::new(remote_state.index, entry.term))
+                    .map(|entry| LogState::new(entry.term, remote_state.index))
             });
             let log_ok = remote_log_state == local_log_state;
+            trace!(log_ok, ?remote_log_state, ?local_log_state);
             let match_length = if log_ok {
-                debug!("{:?}, {:?}", handle, args);
                 let new_log_begin = local_log_state.map_or(0, |state| state.index + 1);
                 let entries: Vec<LogEntry> = args.entries.into_iter().map(Into::into).collect();
                 let match_length = (new_log_begin + entries.len()) as u64;

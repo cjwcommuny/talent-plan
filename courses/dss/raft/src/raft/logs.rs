@@ -57,7 +57,7 @@ impl Logs {
 
     pub fn log_state(&self) -> Option<LogState> {
         last_index_and_element(self.logs.as_slice())
-            .map(|(index, entry)| LogState::new(index, entry.term))
+            .map(|(index, entry)| LogState::new(entry.term, index))
     }
 
     /// return `LogState` of `self.log[..length]`
@@ -65,7 +65,7 @@ impl Logs {
         assert!(index <= self.logs.len());
         index
             .checked_sub(1)
-            .map(|index| LogState::new(index, self.logs[index].term))
+            .map(|index| LogState::new(self.logs[index].term, index))
     }
 
     pub fn update_log_tail(&mut self, tail_begin: usize, mut entries: Vec<LogEntry>) {

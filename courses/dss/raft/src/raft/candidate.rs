@@ -13,7 +13,7 @@ use rand::Rng;
 use std::time::Duration;
 use tokio::select;
 use tokio::time::sleep;
-use tracing::{debug, error, instrument};
+use tracing::{info, trace, trace_span, warn};
 
 /// make the constructor private
 #[derive(Debug, Default)]
@@ -24,8 +24,8 @@ impl Candidate {
         Self(())
     }
 
-    #[instrument(name = "Candidate::progress", skip_all, ret, fields(node_id = handle.node_id, term = handle.election.get_current_term()), level = "debug")]
     pub(crate) async fn progress(self, handle: &mut Handle) -> Role {
+        let _span = trace_span!("Candidate", node_id = handle.node_id).entered();
         handle.election.increment_term();
         handle.election.voted_for = Some(handle.node_id);
         let peers = &handle.peers;
@@ -35,6 +35,10 @@ impl Candidate {
                 term: handle.election.current_term(),
                 candidate_id: handle.node_id as u32,
             };
+            trace!(
+                "term={}, send vote requests",
+                handle.election.current_term()
+            );
             handle
                 .node_ids_except_mine()
                 .map(|node_id| {
@@ -53,10 +57,14 @@ impl Candidate {
         futures::pin_mut!(election_timeout);
         while votes_received.len() < handle.majority_threshold() {
             select! {
-                _ = election_timeout.next() => return Role::Candidate(self),
+                _ = election_timeout.next() => {
+                    info!("term={}, election timeout", handle.election.current_term());
+                    return Role::Candidate(self)
+                }
                 Some(task) = handle.remote_task_receiver.recv() => {
                     let RemoteTaskResult { success, new_role } = task.handle(Role::Candidate(Candidate::new()), handle).await;
                     if success {
+                        info!("term={}, transit to {:?}", handle.election.current_term(), new_role);
                         return new_role;
                     }
                 }
@@ -66,7 +74,7 @@ impl Candidate {
                         LocalTask::GetTerm(sender) => sender.send(handle.election.current_term()).unwrap(),
                         LocalTask::CheckLeader(sender) => sender.send(false).unwrap(),
                         LocalTask::Shutdown(sender) => {
-                            info!("shutdown");
+                            info!("term={}, shutdown", handle.election.current_term());
                             sender.send(()).unwrap();
                             return Role::Stop;
                         }
@@ -83,19 +91,16 @@ impl Candidate {
                                 handle.election.voted_for = None;
                                 return Role::Follower(Follower::default());
                             } else {
-                                debug!("received outdated votes or non-granted votes, current_term: {}, reply.term: {}", current_term, reply.term);
+                                trace!("term={}, received outdated votes or non-granted votes, reply.term: {}", current_term, reply.term);
                             }
                         }
-                        Err(e) => error!("{}", e.to_string())
+                        Err(e) => warn!("term={}, {}", handle.election.current_term(), e.to_string())
                     }
                 }
             }
         }
-        Role::Leader(Leader::from(
-            self,
-            handle.logs.len(),
-            handle.peers.len(),
-        ))
+        info!("term={}, become leader", handle.election.current_term());
+        Role::Leader(Leader::from(self, handle.logs.len(), handle.peers.len()))
     }
 }
 

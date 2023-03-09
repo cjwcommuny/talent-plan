@@ -135,7 +135,7 @@ impl RemoteTask {
     pub async fn handle(self, role: Role, handle: &mut Handle) -> RemoteTaskResult {
         match self {
             RemoteTask::RequestVote { args, sender } => {
-                let (reply, new_role) = role.request_vote(handle, &args);
+                let (reply, new_role) = role.request_vote(&args, handle);
                 let result = if reply.vote_granted {
                     RemoteTaskResult::new(true, new_role)
                 } else {
@@ -145,7 +145,7 @@ impl RemoteTask {
                 result
             }
             RemoteTask::AppendEntries { args, sender } => {
-                let (reply, new_role) = role.append_entries(handle, args).await;
+                let (reply, new_role) = role.append_entries(args, handle).await;
                 let result = if reply.match_length.is_some() {
                     RemoteTaskResult::new(true, new_role)
                 } else {

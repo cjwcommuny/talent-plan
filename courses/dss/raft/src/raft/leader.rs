@@ -16,7 +16,7 @@ use crate::raft::candidate::Candidate;
 use crate::raft::follower::Follower;
 use tokio::select;
 use tokio::time::interval;
-use tracing::{debug, error, info, instrument};
+use tracing::{info, instrument, trace, trace_span, warn};
 
 /// inner structure for `ApplyMsg`
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,8 +41,8 @@ impl Leader {
         }
     }
 
-    #[instrument(name = "Leader::progress", skip_all, fields(node_id = handle.node_id, term = handle.election.get_current_term()), level = "debug")]
     pub(crate) async fn progress(mut self, handle: &mut Handle) -> Role {
+        let _span = trace_span!("Leader", node_id = handle.node_id).entered();
         let mut rpc_replies: FuturesUnordered<_> = handle
             .node_ids_except_mine()
             .map(replicate_log(&self, handle))
@@ -51,6 +51,7 @@ impl Leader {
         let new_role: Role = loop {
             select! {
                 _ = heartbeat_timer.tick() => {
+                    trace!("term={}, send heartbeat", handle.election.current_term());
                     rpc_replies
                         .extend(handle.node_ids_except_mine().map(replicate_log(&self, handle)))
                 }
@@ -76,12 +77,13 @@ impl Leader {
                                 }
                             }
                         }
-                        Err(e) => error!(rpc_error = e.to_string()),
+                        Err(e) => warn!(rpc_error = e.to_string()),
                     }
                 }
                 Some(task) = handle.local_task_receiver.recv() => {
                     match task {
                         LocalTask::AppendEntries { data, sender } => {
+                            trace!("term={}, local task append entries", handle.election.current_term());
                             let current_term = handle.election.current_term();
                             let index = handle.logs.add_log(LogKind::Command, data, current_term);
                             self.match_length[handle.node_id] = index + 1;
@@ -91,14 +93,14 @@ impl Leader {
                         LocalTask::GetTerm(sender) => sender.send(handle.election.current_term()).unwrap(),
                         LocalTask::CheckLeader(sender) => sender.send(true).unwrap(),
                         LocalTask::Shutdown(sender) => {
-                            info!("shutdown");
+                            info!("term={}, shutdown", handle.election.current_term());
                             sender.send(()).unwrap();
                             break Role::Stop;
                         }
                     }
                 }
                 Some(task) = handle.remote_task_receiver.recv() => {
-                    debug!("handle remote task");
+                    trace!("handle remote task");
                     let RemoteTaskResult { success: _, new_role } = task.handle(Role::Leader(self), handle).await;
                     if let Role::Leader(new_role) = new_role {
                         self = new_role;
@@ -111,7 +113,7 @@ impl Leader {
         new_role
     }
 
-    #[instrument(ret, level = "debug")]
+    #[instrument(ret, level = "trace")]
     fn on_receive_append_entries_reply(
         reply: AppendEntriesReply,
         current_term: TermId,
@@ -167,13 +169,14 @@ async fn try_commit_logs(leader: &Leader, handle: &mut Handle) {
 
 type ReplicateLogFuture = impl Future<Output = raft::Result<AppendEntriesReply>>;
 
-#[instrument(skip(handle), level = "debug")]
+#[instrument(skip(leader, handle), level = "trace")]
 fn send_append_entries(
     node_id: NodeId,
     leader: &Leader,
     handle: &Handle,
     entries: Vec<LogEntryProst>,
 ) -> ReplicateLogFuture {
+    trace!("term={}, {:?}", handle.election.current_term(), handle.logs);
     let log_length = leader.next_index[node_id];
     let log_state = handle.logs.log_state_before(log_length).map(Into::into);
     let args = AppendEntriesArgs {
@@ -183,7 +186,6 @@ fn send_append_entries(
         entries,
         leader_commit_length: handle.logs.commit_len() as u64,
     };
-    debug!(?handle, ?args);
     handle.peers[node_id]
         .append_entries(&args)
         .map(move |result| result.map_err(|e| raft::Error::Rpc(e, node_id)))
@@ -271,15 +273,16 @@ impl From<LogEntry> for LogEntryProst {
     }
 }
 
+/// NOTE: term should come first, since we implement `Ord` here.
 #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Copy, Clone, new)]
 pub struct LogState {
-    pub index: usize,
     pub term: TermId,
+    pub index: usize,
 }
 
 impl From<LogStateProst> for LogState {
     fn from(value: LogStateProst) -> Self {
-        LogState::new(value.index as usize, value.term)
+        LogState::new(value.term, value.index as usize)
     }
 }
 

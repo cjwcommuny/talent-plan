@@ -12,10 +12,10 @@ pub mod raftpb {
 
     #[derive(Clone, PartialEq, Eq, Copy, prost::Message)]
     pub struct LogStateProst {
-        #[prost(uint32, tag = "1")]
-        pub index: u32,
-        #[prost(uint64, tag = "2")]
+        #[prost(uint64, tag = "1")]
         pub term: u64,
+        #[prost(uint32, tag = "2")]
+        pub index: u32,
     }
 
     /// Google's Protobuf is shit, which cannot handle sum type well.

@@ -9,10 +9,9 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 use std::fmt::Debug;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{error, instrument};
+use tracing::{error, info, instrument};
 
 mod candidate;
 mod common;
@@ -32,6 +31,7 @@ mod tests;
 use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
+use crate::raft::common::set_panic_with_log;
 
 use crate::raft::inner::{Config, Inner, LocalTask};
 /// As each Raft peer becomes aware that successive log entries are committed,
@@ -119,6 +119,10 @@ impl Raft {
 
         // see https://github.com/tokio-rs/tracing/discussions/1626
         let dispatch = tracing::dispatcher::Dispatch::default();
+        set_panic_with_log();
+
+        // different node should has different seeds
+        let seed = node_id as u64;
         let handle = std::thread::spawn(move || {
             let dispatch = &dispatch;
             let _guard = tracing::dispatcher::set_default(dispatch);
@@ -133,12 +137,7 @@ impl Raft {
                     peers,
                     remote_task_receiver,
                     local_task_receiver,
-                    Box::new(StdRng::seed_from_u64(
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_millis() as u64,
-                    )),
+                    Box::new(StdRng::seed_from_u64(seed)),
                     Config::default(),
                 ),
             );

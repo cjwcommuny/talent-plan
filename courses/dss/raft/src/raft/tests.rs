@@ -33,11 +33,13 @@ fn random_entry(rnd: &mut ThreadRng) -> Entry {
 fn init_logger(test_name: &str) -> DefaultGuard {
     let file = File::create(Path::new("../logs").join(&format!("{}.log", test_name))).unwrap();
     let subscriber = tracing_subscriber::fmt()
-        .with_file(true)
-        .with_line_number(true)
+        .with_file(false)
+        .with_line_number(false)
         .with_ansi(false)
         .with_env_filter(EnvFilter::from_default_env())
         .with_writer(Arc::new(file))
+        .with_target(false)
+        .without_time()
         .finish();
     tracing::subscriber::set_default(subscriber)
 }
@@ -391,25 +393,28 @@ fn test_rejoin_2b() {
 
     // leader network failure
     let leader1 = cfg.check_one_leader();
-    info!("leader network failure");
+    info!("leader {leader1} network failure");
     cfg.disconnect(leader1);
 
     // make old leader try to agree on some entries
+    info!("leader {leader1} start 102");
     let _ = cfg.rafts.lock().unwrap()[leader1]
         .as_ref()
         .unwrap()
         .start(&Entry { x: 102 });
+    info!("leader {leader1} start 103");
     let _ = cfg.rafts.lock().unwrap()[leader1]
         .as_ref()
         .unwrap()
         .start(&Entry { x: 103 });
+    info!("leader {leader1} start 104");
     let _ = cfg.rafts.lock().unwrap()[leader1]
         .as_ref()
         .unwrap()
         .start(&Entry { x: 104 });
 
     // new leader commits, also for index=2
-    cfg.one(Entry { x: 103 }, 2, true);
+    cfg.one(Entry { x: 105 }, 2, true);
 
     // new leader network failure
     let leader2 = cfg.check_one_leader();
@@ -420,13 +425,13 @@ fn test_rejoin_2b() {
     info!("old leader connected again");
     cfg.connect(leader1);
 
-    cfg.one(Entry { x: 104 }, 2, true);
+    cfg.one(Entry { x: 106 }, 2, true);
 
     // all together now
     info!("all together now");
     cfg.connect(leader2);
 
-    cfg.one(Entry { x: 105 }, servers, true);
+    cfg.one(Entry { x: 107 }, servers, true);
 
     cfg.end();
 }
