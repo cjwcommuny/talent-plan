@@ -273,7 +273,7 @@ impl From<LogEntry> for LogEntryProst {
     }
 }
 
-/// NOTE: term should come first, since we implement `Ord` here.
+/// NOTE: `term` should come first, since we implement `PartialOrd` and `Ord` here.
 #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Copy, Clone, new)]
 pub struct LogState {
     pub term: TermId,

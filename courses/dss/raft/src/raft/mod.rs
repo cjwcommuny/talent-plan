@@ -122,7 +122,6 @@ impl Raft {
         set_panic_with_log();
 
         // different node should has different seeds
-        let seed = node_id as u64;
         let handle = std::thread::spawn(move || {
             let dispatch = &dispatch;
             let _guard = tracing::dispatcher::set_default(dispatch);
@@ -137,7 +136,7 @@ impl Raft {
                     peers,
                     remote_task_receiver,
                     local_task_receiver,
-                    Box::new(StdRng::seed_from_u64(seed)),
+                    Box::new(StdRng::from_entropy()),
                     Config::default(),
                 ),
             );

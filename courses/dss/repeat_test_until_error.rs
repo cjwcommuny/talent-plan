@@ -4,7 +4,8 @@ use std::process::Command;
 fn main() {
     let mut args = args();
     let test_name = args.nth(1).unwrap();
-    let max_trial: usize = args.nth(2).unwrap_or("200".to_string()).parse().unwrap();
+    let max_trial: usize = args.nth(0).unwrap_or("200".to_string()).parse().unwrap();
+    println!("{test_name}, {max_trial}");
     for index in 1..max_trial + 1 {
         println!("begin test {}", index);
         let output = Command::new("cargo")
