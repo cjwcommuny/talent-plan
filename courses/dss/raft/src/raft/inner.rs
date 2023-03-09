@@ -1,6 +1,6 @@
 use crate::proto::raftpb::raft::Client as RaftClient;
 use crate::proto::raftpb::{
-    AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply,
+    AppendEntriesArgs, AppendEntriesReply, LogEntryProst, RequestVoteArgs, RequestVoteReply,
 };
 use std::fmt::{Debug, Formatter};
 
@@ -20,6 +20,7 @@ use crate::raft::logs::Logs;
 use crate::raft::election::Election;
 use tokio::sync::{mpsc, oneshot};
 use tracing::instrument;
+use typed_builder::TypedBuilder;
 
 pub struct Config {
     pub heartbeat_cycle: u64,
@@ -53,8 +54,7 @@ impl Inner {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-#[derive(new)]
+#[derive(TypedBuilder)]
 pub struct Handle {
     pub node_id: usize,                // this peer's index into peers[]
     pub persister: Box<dyn Persister>, // Object to hold this peer's persisted state
@@ -79,6 +79,36 @@ impl Debug for Handle {
 }
 
 impl Handle {
+    pub fn restore(data: Vec<u8>) -> Option<PersistentState> {
+        if data.is_empty() {
+            None
+        } else {
+            Some(labcodec::decode(&data).expect("decoding persistent state error"))
+        }
+    }
+
+    /// save Raft's persistent state to stable storage,
+    /// where it can later be retrieved after a crash and restart.
+    /// see paper's Figure 2 for a description of what should be persistent.
+    fn persist(&self) {
+        let state = self.get_persistent_state();
+        let mut buffer = Vec::new();
+        labcodec::encode(&state, &mut buffer).expect("decoding persistent state error");
+        self.persister.save_raft_state(buffer)
+    }
+
+    fn get_persistent_state(&self) -> PersistentState {
+        PersistentState::new(
+            self.election.current_term(),
+            self.election.voted_for.map(|id| id as u32),
+            self.logs
+                .tail(0)
+                .map(Clone::clone)
+                .map(Into::into)
+                .collect(),
+        )
+    }
+
     pub fn node_ids_except_mine(&self) -> impl Iterator<Item = NodeId> {
         let me = self.node_id;
         (0..self.peers.len()).filter(move |node_id| *node_id != me)
@@ -166,4 +196,14 @@ pub enum LocalTask {
     GetTerm(oneshot::Sender<TermId>),
     CheckLeader(oneshot::Sender<bool>),
     Shutdown(oneshot::Sender<()>),
+}
+
+#[derive(prost::Message, new)]
+pub struct PersistentState {
+    #[prost(uint64, tag = "1")]
+    pub term: u64,
+    #[prost(uint32, optional, tag = "2")]
+    pub voted_for: Option<u32>,
+    #[prost(message, repeated, tag = "3")]
+    pub log: Vec<LogEntryProst>,
 }

@@ -32,6 +32,13 @@ impl Debug for Logs {
 }
 
 impl Logs {
+    pub fn with_logs(logs: Vec<LogEntry>) -> Self {
+        Self {
+            commit_length: usize::default(),
+            logs,
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.logs.len()
     }

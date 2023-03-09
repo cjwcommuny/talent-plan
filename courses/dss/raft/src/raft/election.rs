@@ -1,7 +1,8 @@
 use crate::raft::{NodeId, TermId};
 use assert2::assert;
+use derive_new::new;
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, new)]
 pub struct Election {
     term: TermId,
     pub voted_for: Option<NodeId>,

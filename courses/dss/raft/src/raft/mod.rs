@@ -109,8 +109,6 @@ impl Raft {
     ) -> Raft {
         info!("start Raft {node_id}");
 
-        let raft_state = persister.raft_state();
-
         // Your initialization code here (2A, 2B, 2C).
         let (remote_task_sender, remote_task_receiver) = mpsc::channel(Self::BUFFER_SIZE);
         let (local_task_sender, local_task_receiver) = mpsc::channel(Self::BUFFER_SIZE);
@@ -121,68 +119,48 @@ impl Raft {
         let dispatch = tracing::dispatcher::Dispatch::default();
         set_panic_with_log();
 
+        let persistent_state = Handle::restore(persister.raft_state());
+        let handle_builder = Handle::builder()
+            .node_id(node_id)
+            .persister(persister)
+            .apply_ch(apply_ch)
+            .peers(peers)
+            .remote_task_receiver(remote_task_receiver)
+            .local_task_receiver(local_task_receiver)
+            .random_generator(Box::new(StdRng::from_entropy()))
+            .config(Config::default());
+        let handle = if let Some(persistent_state) = persistent_state {
+            handle_builder
+                .election(Election::new(
+                    persistent_state.term,
+                    persistent_state.voted_for.map(|id| id as NodeId),
+                ))
+                .logs(Logs::with_logs(
+                    persistent_state.log.into_iter().map(Into::into).collect(),
+                ))
+                .build()
+        } else {
+            handle_builder
+                .election(Election::default())
+                .logs(Logs::default())
+                .build()
+        };
+
         // different node should has different seeds
-        let handle = std::thread::spawn(move || {
+        let join_handle = std::thread::spawn(move || {
             let dispatch = &dispatch;
             let _guard = tracing::dispatcher::set_default(dispatch);
-            let mut raft_inner = Inner::new(
-                Some(Role::default()),
-                Handle::new(
-                    node_id,
-                    persister,
-                    Election::default(),
-                    Logs::default(),
-                    apply_ch,
-                    peers,
-                    remote_task_receiver,
-                    local_task_receiver,
-                    Box::new(StdRng::from_entropy()),
-                    Config::default(),
-                ),
-            );
+            let mut raft_inner = Inner::new(Some(Role::default()), handle);
             raft_runtime.block_on(raft_inner.raft_main());
         });
 
-        let mut raft = Raft {
+        let raft = Raft {
             remote_task_sender,
             local_task_sender,
-            thread_handle: Some(handle),
+            thread_handle: Some(join_handle),
             node_id,
         };
-
-        // initialize from state persisted before a crash
-        raft.restore(&raft_state);
         raft
-    }
-
-    /// save Raft's persistent state to stable storage,
-    /// where it can later be retrieved after a crash and restart.
-    /// see paper's Figure 2 for a description of what should be persistent.
-    #[allow(dead_code)]
-    fn persist(&mut self) {
-        // Your code here (2C).
-        // Example:
-        // labcodec::encode(&self.xxx, &mut data).unwrap();
-        // labcodec::encode(&self.yyy, &mut data).unwrap();
-        // self.persister.save_raft_state(data);
-    }
-
-    /// restore previously persisted state.
-    fn restore(&mut self, data: &[u8]) {
-        if data.is_empty() {
-            // bootstrap without any state?
-        }
-        // Your code here (2C).
-        // Example:
-        // match labcodec::decode(data) {
-        //     Ok(o) => {
-        //         self.xxx = o.xxx;
-        //         self.yyy = o.yyy;
-        //     }
-        //     Err(e) => {
-        //         panic!("{:?}", e);
-        //     }
-        // }
     }
 
     #[allow(dead_code)]
