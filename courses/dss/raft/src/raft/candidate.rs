@@ -1,15 +1,18 @@
-use crate::proto::raftpb::RequestVoteArgs;
 use crate::raft::errors::Error;
-use crate::raft::inner::LocalTask;
 use crate::raft::inner::RemoteTaskResult;
+use crate::raft::inner::{LocalTask, PeerEndPoint};
 use crate::raft::leader::Leader;
 use crate::raft::role::Role;
 use futures::{stream, stream::FuturesUnordered, FutureExt, StreamExt};
 use std::collections::HashSet;
 use std::fmt::Debug;
 
+use crate::raft;
+use crate::raft::common::FutureOutput;
 use crate::raft::follower::Follower;
+use crate::raft::handle::peer::Peers;
 use crate::raft::handle::Handle;
+use crate::raft::rpc::{RequestVoteArgs, RequestVoteReply};
 use rand::Rng;
 use std::time::Duration;
 use tokio::select;
@@ -17,96 +20,116 @@ use tokio::time::sleep;
 use tracing::{info, trace, trace_span, warn};
 
 /// make the constructor private
-#[derive(Debug, Default)]
-pub struct Candidate(());
+#[derive(Debug)]
+pub struct Candidate {
+    pub peers: Peers<Box<dyn PeerEndPoint>>,
+}
+
+impl From<Follower> for Candidate {
+    fn from(follower: Follower) -> Self {
+        Self {
+            peers: follower.peers,
+        }
+    }
+}
 
 impl Candidate {
-    fn new() -> Self {
-        Self(())
-    }
-
     pub(crate) async fn progress(self, handle: &mut Handle) -> Role {
         let _span = trace_span!("Candidate", node_id = handle.node_id).entered();
         handle.increment_term();
         handle.election.voted_for = Some(handle.node_id);
-        let peers = &handle.peers;
-        let mut replies: FuturesUnordered<_> = {
-            let args = RequestVoteArgs {
-                log_state: handle.logs.log_state().map(Into::into),
-                term: handle.election.current_term(),
-                candidate_id: handle.node_id as u32,
-            };
-            trace!(
-                "term={}, send vote requests",
-                handle.election.current_term()
-            );
-            handle
-                .node_ids_except_mine()
-                .map(|node_id| {
-                    peers[node_id]
-                        .request_vote(&args)
-                        .map(move |r| r.map_err(|e| Error::Rpc(e, node_id)))
-                })
-                .collect()
+        let args = RequestVoteArgs {
+            log_state: handle.logs.log_state(),
+            term: handle.election.current_term(),
+            candidate_id: handle.node_id,
         };
         let election_timeout = stream::once(sleep(Duration::from_millis(
             handle
                 .random_generator
                 .gen_range(handle.config.election_timeout.clone()),
         )));
-        let mut votes_received = HashSet::from([handle.node_id as u32]);
+        let mut votes_received = HashSet::from([handle.node_id]);
         futures::pin_mut!(election_timeout);
-        while votes_received.len() < handle.majority_threshold() {
-            select! {
-                _ = election_timeout.next() => {
-                    info!("term={}, election timeout", handle.election.current_term());
-                    return Role::Candidate(self)
-                }
-                Some(task) = handle.remote_task_receiver.recv() => {
-                    let RemoteTaskResult { success, new_role } = task.handle(Role::Candidate(Candidate::new()), handle).await;
-                    if success {
-                        info!("term={}, transit to {:?}", handle.election.current_term(), new_role);
-                        return new_role;
+        let majority_threshold = self.peers.majority_threshold();
+        use LoopResult::{Elected, RestartAsCandidate, Shutdown, TransitToFollower};
+        let vote_result = 'collect_vote: {
+            let mut replies: FuturesUnordered<_> = {
+                trace!(
+                    "term={}, send vote requests",
+                    handle.election.current_term()
+                );
+                self.peers
+                    .iter_except_me()
+                    .map(|(peer_id, peer)| {
+                        peer.as_ref().request_vote(&args).map(
+                            move |result: raft::Result<RequestVoteReply>| {
+                                FutureOutput::new(result, peer_id)
+                            },
+                        )
+                    })
+                    .collect()
+            };
+            while votes_received.len() < majority_threshold {
+                select! {
+                    _ = election_timeout.next() => {
+                        break 'collect_vote RestartAsCandidate;
                     }
-                }
-                Some(task) = handle.local_task_receiver.recv() => {
-                    match task {
-                        LocalTask::AppendEntries { sender, .. } => sender.send(None).unwrap(),
-                        LocalTask::GetTerm(sender) => sender.send(handle.election.current_term()).unwrap(),
-                        LocalTask::CheckLeader(sender) => sender.send(false).unwrap(),
-                        LocalTask::Shutdown(sender) => {
-                            info!("term={}, shutdown", handle.election.current_term());
-                            sender.send(()).unwrap();
-                            return Role::Stop;
+                    Some(task) = handle.remote_task_receiver.recv() => {
+                        let RemoteTaskResult { transit_to_follower } = task.handle(handle).await;
+                        if transit_to_follower {
+                            break 'collect_vote TransitToFollower;
                         }
                     }
-                }
-                Some(reply_result) = replies.next() => {
-                    let current_term = handle.election.current_term();
-                    match reply_result {
-                        Ok(reply) => {
-                            if reply.term == current_term && reply.vote_granted {
-                                votes_received.insert(reply.node_id);
-                            } else if reply.term > current_term {
-                                handle.update_current_term(reply.term);
-                                handle.election.voted_for = None;
-                                return Role::Follower(Follower::default());
-                            } else {
-                                trace!("term={}, received outdated votes or non-granted votes, reply.term: {}", current_term, reply.term);
+                    Some(task) = handle.local_task_receiver.recv() => {
+                        match task {
+                            LocalTask::AppendEntries { sender, .. } => sender.send(None).unwrap(),
+                            LocalTask::GetTerm(sender) => sender.send(handle.election.current_term()).unwrap(),
+                            LocalTask::CheckLeader(sender) => sender.send(false).unwrap(),
+                            LocalTask::Shutdown(sender) => {
+                                sender.send(()).unwrap();
+                                break 'collect_vote Shutdown;
                             }
                         }
-                        Err(e) => warn!("term={}, {}", handle.election.current_term(), e.to_string())
+                    }
+                    Some(FutureOutput { output: reply_result, context: peer_id }) = replies.next() => {
+                        let current_term = handle.election.current_term();
+                        match reply_result {
+                            Ok(reply) => {
+                                if reply.term == current_term && reply.vote_granted {
+                                    votes_received.insert(*peer_id);
+                                } else if reply.term > current_term {
+                                    handle.update_current_term(reply.term);
+                                    handle.election.voted_for = None;
+                                    break 'collect_vote TransitToFollower;
+                                } else {
+                                    trace!("term={}, received outdated votes or non-granted votes, reply.term: {}", current_term, reply.term);
+                                }
+                            }
+                            Err(e) => warn!("term={}, {}", handle.election.current_term(), e.to_string())
+                        }
                     }
                 }
             }
+            break 'collect_vote Elected;
+        };
+        info!(
+            "term={}, vote_result={:?}",
+            handle.election.current_term(),
+            vote_result
+        );
+        match vote_result {
+            RestartAsCandidate => Role::Candidate(self),
+            TransitToFollower => Role::Follower(Follower::from(self)),
+            Shutdown => Role::Shutdown,
+            Elected => Role::Leader(Leader::from(self, handle.logs.len())),
         }
-        info!("term={}, become leader", handle.election.current_term());
-        Role::Leader(Leader::from(self, handle.logs.len(), handle.peers.len()))
     }
 }
 
-impl From<Follower> for Candidate {
-    fn from(_: Follower) -> Self {
-        Self::new()
-    }
+#[derive(Debug)]
+enum LoopResult {
+    RestartAsCandidate,
+    TransitToFollower,
+    Shutdown,
+    Elected,
 }

@@ -32,21 +32,6 @@ impl Debug for Logs {
 }
 
 impl Logs {
-    pub fn with_logs(logs: Vec<LogEntry>) -> Self {
-        Self {
-            commit_length: usize::default(),
-            logs,
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.logs.len()
-    }
-
-    pub fn commit_len(&self) -> usize {
-        self.commit_length
-    }
-
     pub(in crate::raft::handle) fn add_log(
         &mut self,
         log_kind: LogKind,
@@ -56,28 +41,6 @@ impl Logs {
         let index = self.logs.len();
         self.logs.push(LogEntry::new(log_kind, data, term));
         index
-    }
-
-    pub fn get(&self, index: usize) -> Option<&LogEntry> {
-        self.logs.get(index)
-    }
-
-    pub fn tail(&self, tail_begin: usize) -> impl Iterator<Item = &LogEntry> {
-        assert!(tail_begin <= self.logs.len());
-        self.logs[tail_begin..].iter()
-    }
-
-    pub fn log_state(&self) -> Option<LogState> {
-        last_index_and_element(self.logs.as_slice())
-            .map(|(index, entry)| LogState::new(entry.term, index))
-    }
-
-    /// return `LogState` of `self.log[..length]`
-    pub fn log_state_before(&self, index: usize) -> Option<LogState> {
-        assert!(index <= self.logs.len());
-        index
-            .checked_sub(1)
-            .map(|index| LogState::new(self.logs[index].term, index))
     }
 
     pub(in crate::raft::handle) fn update_log_tail(
@@ -105,6 +68,49 @@ impl Logs {
         );
         self.logs
             .splice(mutation_begin.., entries.drain(mutation_offset..));
+    }
+}
+
+impl Logs {
+    pub fn with_logs(logs: Vec<LogEntry>) -> Self {
+        Self {
+            commit_length: usize::default(),
+            logs,
+        }
+    }
+
+    pub fn first_index_with_same_term_with(&self, index: usize) -> usize {
+        todo!()
+    }
+
+    pub fn len(&self) -> usize {
+        self.logs.len()
+    }
+
+    pub fn commit_len(&self) -> usize {
+        self.commit_length
+    }
+
+    pub fn get(&self, index: usize) -> Option<&LogEntry> {
+        self.logs.get(index)
+    }
+
+    pub fn tail(&self, tail_begin: usize) -> impl Iterator<Item = &LogEntry> {
+        assert!(tail_begin <= self.logs.len());
+        self.logs[tail_begin..].iter()
+    }
+
+    pub fn log_state(&self) -> Option<LogState> {
+        last_index_and_element(self.logs.as_slice())
+            .map(|(index, entry)| LogState::new(entry.term, index))
+    }
+
+    /// return `LogState` of `self.log[..length]`
+    pub fn log_state_before(&self, index: usize) -> Option<LogState> {
+        assert!(index <= self.logs.len());
+        index
+            .checked_sub(1)
+            .map(|index| LogState::new(self.logs[index].term, index))
     }
 
     /// returns the logs just committed

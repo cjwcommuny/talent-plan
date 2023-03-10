@@ -25,6 +25,7 @@ mod inner;
 mod leader;
 pub mod persister;
 mod role;
+mod rpc;
 #[cfg(test)]
 mod tests;
 
@@ -310,7 +311,10 @@ impl RaftService for Node {
     // example RequestVote RPC handler.
     //
     // CAVEATS: Please avoid locking or sleeping here, it may jam the network.
-    async fn request_vote(&self, args: RequestVoteArgs) -> labrpc::Result<RequestVoteReply> {
+    async fn request_vote(
+        &self,
+        args: RequestVoteArgsProst,
+    ) -> labrpc::Result<RequestVoteReplyProst> {
         // Your code here (2A, 2B).
         pass_message(&self.raft.remote_task_sender, |sender| {
             RemoteTask::RequestVote { args, sender }
@@ -318,7 +322,10 @@ impl RaftService for Node {
         .await
     }
 
-    async fn append_entries(&self, args: AppendEntriesArgs) -> labrpc::Result<AppendEntriesReply> {
+    async fn append_entries(
+        &self,
+        args: AppendEntriesArgsProst,
+    ) -> labrpc::Result<AppendEntriesReplyProst> {
         pass_message(&self.raft.remote_task_sender, |sender| {
             RemoteTask::AppendEntries { args, sender }
         })

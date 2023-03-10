@@ -1,11 +1,13 @@
-use crate::proto::raftpb::{
-    AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply,
-};
+use crate::proto::raftpb::{AppendEntriesArgsProst, AppendEntriesReplyProst};
+use crate::raft;
 use crate::raft::handle::Handle;
-use crate::raft::role::Role;
+use crate::raft::role::{append_entries, request_vote, Role};
+use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply};
 use crate::raft::TermId;
+use async_trait::async_trait;
+use derive_more::IsVariant;
 use derive_new::new;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Formatter, Pointer};
 use std::ops::Range;
 use tokio::sync::oneshot;
 
@@ -34,7 +36,7 @@ pub struct Inner {
 
 impl Inner {
     pub async fn raft_main(&mut self) {
-        while let role = self.role.take().unwrap() && !matches!(role, Role::Stop) {
+        while let role = self.role.take().unwrap() && !matches!(role, Role::Shutdown) {
             let new_role = role.progress(&mut self.handle).await;
             self.role = Some(new_role);
         }
@@ -65,32 +67,21 @@ impl Debug for RemoteTask {
 
 #[derive(new)]
 pub struct RemoteTaskResult {
-    pub success: bool,
-    pub new_role: Role,
+    pub transit_to_follower: bool,
 }
 
 impl RemoteTask {
-    pub async fn handle(self, role: Role, handle: &mut Handle) -> RemoteTaskResult {
+    pub async fn handle(self, handle: &mut Handle) -> RemoteTaskResult {
         match self {
             RemoteTask::RequestVote { args, sender } => {
-                let (reply, new_role) = role.request_vote(&args, handle);
-                let result = if reply.vote_granted {
-                    RemoteTaskResult::new(true, new_role)
-                } else {
-                    RemoteTaskResult::new(false, new_role)
-                };
+                let (reply, transit_to_follower) = request_vote(&args, handle);
                 sender.send(reply).unwrap();
-                result
+                RemoteTaskResult::new(transit_to_follower)
             }
             RemoteTask::AppendEntries { args, sender } => {
-                let (reply, new_role) = role.append_entries(args, handle).await;
-                let result = if reply.match_length.is_some() {
-                    RemoteTaskResult::new(true, new_role)
-                } else {
-                    RemoteTaskResult::new(false, new_role)
-                };
+                let (reply, transit_to_follower) = append_entries(args, handle).await;
                 sender.send(reply).unwrap();
-                result
+                RemoteTaskResult::new(transit_to_follower)
             }
         }
     }
@@ -104,4 +95,28 @@ pub enum LocalTask {
     GetTerm(oneshot::Sender<TermId>),
     CheckLeader(oneshot::Sender<bool>),
     Shutdown(oneshot::Sender<()>),
+}
+
+/// RPC end points of all peers
+#[async_trait]
+pub trait PeerEndPoint {
+    async fn request_vote(&self, args: &RequestVoteArgs) -> raft::Result<RequestVoteReply>;
+    async fn append_entries(&self, args: &AppendEntriesArgs) -> raft::Result<AppendEntriesReply>;
+}
+
+#[async_trait]
+impl<T> PeerEndPoint for Box<T>
+where
+    T: PeerEndPoint + ?Sized,
+{
+    async fn request_vote(&self, args: &RequestVoteArgs) -> raft::errors::Result<RequestVoteReply> {
+        (**self).request_vote(args)
+    }
+
+    async fn append_entries(
+        &self,
+        args: &AppendEntriesArgs,
+    ) -> raft::errors::Result<AppendEntriesReply> {
+        (**self).append_entries(args)
+    }
 }

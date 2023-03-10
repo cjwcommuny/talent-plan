@@ -1,5 +1,4 @@
 use crate::proto::raftpb::raft::Client as RaftClient;
-use crate::proto::raftpb::LogEntryProst;
 use crate::raft::handle::election::Election;
 use crate::raft::handle::Logs;
 use crate::raft::inner::{Config, LocalTask, RemoteTask};
@@ -18,12 +17,11 @@ use typed_builder::TypedBuilder;
 
 #[derive(TypedBuilder)]
 pub struct Handle {
-    pub node_id: usize,                // this peer's index into peers[]
+    pub node_id: NodeId,               // this peer's index into peers[]
     pub persister: Box<dyn Persister>, // Object to hold this peer's persisted state
     pub election: Election,
     pub logs: Logs,
     pub apply_ch: UnboundedSender<ApplyMsg>,
-    pub peers: Vec<RaftClient>, // RPC end points of all peers
     pub remote_task_receiver: mpsc::Receiver<RemoteTask>,
     pub local_task_receiver: mpsc::Receiver<LocalTask>,
     pub random_generator: Box<dyn RngCore + Send>,
@@ -98,11 +96,6 @@ impl Handle {
 }
 
 impl Handle {
-    pub fn node_ids_except_mine(&self) -> impl Iterator<Item = NodeId> {
-        let me = self.node_id;
-        (0..self.peers.len()).filter(move |node_id| *node_id != me)
-    }
-
     /// In the Raft paper, there is `lastApplied` field.
     /// But here, we don't don't make the execution of this function a transaction.
     #[instrument(skip_all, level = "debug")]
@@ -116,10 +109,6 @@ impl Handle {
             apply_ch.send(apply_msg).await.unwrap();
         }
     }
-
-    pub fn majority_threshold(&self) -> usize {
-        div_ceil(self.peers.len() + 1, 2)
-    }
 }
 
 #[derive(prost::Message, new)]
@@ -129,5 +118,5 @@ pub struct PersistentState {
     #[prost(uint32, optional, tag = "2")]
     pub voted_for: Option<u32>,
     #[prost(message, repeated, tag = "3")]
-    pub log: Vec<LogEntryProst>,
+    pub log: Vec<LogEntry>,
 }

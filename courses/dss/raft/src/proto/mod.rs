@@ -1,81 +1,44 @@
 pub mod raftpb {
+    use serde::{Deserialize, Serialize};
+    use std::fmt::Debug;
+
     ///   Example `RequestVote` RPC arguments structure.
     #[derive(Clone, PartialEq, Eq, prost::Message)]
-    pub struct RequestVoteArgs {
-        #[prost(message, optional, tag = "1")]
-        pub log_state: Option<LogStateProst>,
-        #[prost(uint64, tag = "2")]
-        pub term: u64,
-        #[prost(uint32, tag = "3")]
-        pub candidate_id: u32,
-    }
-
-    #[derive(Clone, PartialEq, Eq, Copy, prost::Message)]
-    pub struct LogStateProst {
-        #[prost(uint64, tag = "1")]
-        pub term: u64,
-        #[prost(uint32, tag = "2")]
-        pub index: u32,
-    }
-
-    /// Google's Protobuf is shit, which cannot handle sum type well.
-    #[derive(Clone, PartialEq, Eq, prost::Message)]
-    pub struct LogEntryProst {
-        /// `LogKind`
-        #[prost(bool, tag = "1")]
-        pub is_command: bool,
-        #[prost(bytes, tag = "2")]
+    pub struct RequestVoteArgsProst {
+        #[prost(bytes, tag = "1")]
         pub data: Vec<u8>,
-        #[prost(uint64, tag = "3")]
-        pub term: u64,
-    }
-
-    ///   Example RequestVote RPC reply structure.
-    #[derive(Clone, PartialEq, Eq, prost::Message)]
-    pub struct RequestVoteReply {
-        #[prost(uint64, tag = "1")]
-        pub term: u64,
-        #[prost(uint32, tag = "2")]
-        pub node_id: u32,
-        #[prost(bool, tag = "3")]
-        pub vote_granted: bool,
-    }
-
-    /// if `log_length == 0`, then `prev_log_term == 0`.
-    #[derive(Clone, PartialEq, Eq, prost::Message)]
-    pub struct AppendEntriesArgs {
-        #[prost(uint64, tag = "1")]
-        pub term: u64,
-        #[prost(uint64, tag = "2")]
-        pub leader_id: u64,
-
-        #[prost(message, optional, tag = "3")]
-        /// None if logs is empty
-        pub log_state: Option<LogStateProst>,
-        #[prost(message, repeated, tag = "4")]
-        pub entries: Vec<LogEntryProst>,
-        #[prost(uint64, tag = "5")]
-        pub leader_commit_length: u64,
     }
 
     #[derive(Clone, PartialEq, Eq, prost::Message)]
-    pub struct AppendEntriesReply {
-        #[prost(uint64, tag = "1")]
-        pub term: u64,
+    pub struct RequestVoteReplyProst {
+        #[prost(bytes, tag = "1")]
+        pub data: Vec<u8>,
+    }
 
-        /// `Some(match_index)` if success, `None` else.
-        /// Note: in the Raft paper, the algorithm returns `success: bool`, but actually
-        /// we need to return the `match_index`
-        #[prost(uint64, optional, tag = "2")]
-        pub match_length: Option<u64>,
-        #[prost(uint32, tag = "3")]
-        pub node_id: u32,
+    #[derive(Clone, PartialEq, Eq, prost::Message)]
+    pub struct AppendEntriesArgsProst {
+        #[prost(bytes, tag = "1")]
+        pub data: Vec<u8>,
+    }
+
+    #[derive(Clone, PartialEq, Eq, prost::Message)]
+    pub struct AppendEntriesReplyProst {
+        #[prost(bytes, tag = "1")]
+        pub data: Vec<u8>,
+    }
+
+    pub fn encode<T: Serialize + Debug>(value: &T) -> Vec<u8> {
+        serde_json::to_vec(value).expect(&format!("encode fail: {value:?}"))
+    }
+
+    pub fn decode<'a, T: Deserialize<'a>>(data: &[u8]) -> T {
+        serde_json::from_slice(data).expect(&format!("decode fail"))
     }
 
     labrpc::service! {
         service raft {
-            rpc request_vote(RequestVoteArgs) returns (RequestVoteReply);
-            rpc append_entries(AppendEntriesArgs) returns (AppendEntriesReply);
+            rpc request_vote(RequestVoteArgsProst) returns (RequestVoteReplyProst);
+            rpc append_entries(AppendEntriesArgsProst) returns (AppendEntriesReplyProst);
         }
     }
     pub use self::raft::{

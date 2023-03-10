@@ -5,7 +5,7 @@ use std::{error, fmt, result};
 pub enum Error {
     Encode(labcodec::EncodeError),
     Decode(labcodec::DecodeError),
-    Rpc(labrpc::Error, NodeId),
+    Rpc(labrpc::Error),
     NotLeader,
 }
 
@@ -20,7 +20,7 @@ impl error::Error for Error {
         match *self {
             Self::Encode(ref e) => Some(e),
             Self::Decode(ref e) => Some(e),
-            Self::Rpc(ref e, _) => Some(e),
+            Self::Rpc(ref e) => Some(e),
             Self::NotLeader => None,
         }
     }

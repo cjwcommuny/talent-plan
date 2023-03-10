@@ -1,3 +1,6 @@
+use derive_new::new;
+use futures::{future, FutureExt};
+use std::future::Future;
 use std::ops::Deref;
 use std::panic;
 use tracing::error;
@@ -37,4 +40,24 @@ where
     F: FnOnce() -> R,
 {
     f()
+}
+
+pub async fn async_side_effect<F>(future: F) -> F::Output
+where
+    F: Future,
+{
+    future.await
+}
+
+#[derive(Debug, new)]
+pub struct FutureOutput<Output, Context> {
+    pub output: Output,
+    pub context: Context,
+}
+
+pub fn with_context<F, C>(future: F, context: C) -> impl Future<Output = FutureOutput<F::Output, C>>
+where
+    F: Future,
+{
+    future.map(|output| FutureOutput::new(output, context))
 }
