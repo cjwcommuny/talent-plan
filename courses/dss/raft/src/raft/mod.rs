@@ -33,8 +33,9 @@ use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
 use crate::raft::common::set_panic_with_log;
+use crate::raft::handle::MessageHandler;
 
-use crate::raft::inner::{Config, Inner, LocalTask};
+use crate::raft::inner::{Config, Inner, LocalTask, PeerEndPoint};
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
 /// server, via the `apply_ch` passed to `Raft::new`.
@@ -125,9 +126,6 @@ impl Raft {
             .node_id(node_id)
             .persister(persister)
             .apply_ch(apply_ch)
-            .peers(peers)
-            .remote_task_receiver(remote_task_receiver)
-            .local_task_receiver(local_task_receiver)
             .random_generator(Box::new(StdRng::from_entropy()))
             .config(Config::default());
         let handle = if let Some(persistent_state) = persistent_state {
@@ -146,12 +144,17 @@ impl Raft {
                 .logs(Logs::default())
                 .build()
         };
+        let message_handler = MessageHandler::new(
+            peers.into_iter().map(|client| Box::new(client) as _).collect(),
+            remote_task_receiver,
+            local_task_receiver
+        );
 
         // different node should has different seeds
         let join_handle = std::thread::spawn(move || {
             let dispatch = &dispatch;
             let _guard = tracing::dispatcher::set_default(dispatch);
-            let mut raft_inner = Inner::new(Some(Role::default()), handle);
+            let mut raft_inner = Inner::new(Some(Role::default()), handle, message_handler);
             raft_runtime.block_on(raft_inner.raft_main());
         });
 
@@ -237,7 +240,7 @@ impl Node {
         })
         // The test code uses indices starting from 1, while the implementation uses indices starting from 0.
         .map(|option_tuple| option_tuple.map(|(index, term)| (index + 1, term)))
-        .map_err(|e| Error::Rpc(e, self.raft.node_id))
+        .map_err(Error::Rpc)
         .and_then(|result| result.ok_or(Error::NotLeader))
     }
 
@@ -317,9 +320,9 @@ impl RaftService for Node {
     ) -> labrpc::Result<RequestVoteReplyProst> {
         // Your code here (2A, 2B).
         pass_message(&self.raft.remote_task_sender, |sender| {
-            RemoteTask::RequestVote { args, sender }
+            RemoteTask::RequestVote { args: decode(&args.data), sender }
         })
-        .await
+        .await.map(|reply| RequestVoteReplyProst { data: encode(&reply) })
     }
 
     async fn append_entries(
@@ -327,9 +330,9 @@ impl RaftService for Node {
         args: AppendEntriesArgsProst,
     ) -> labrpc::Result<AppendEntriesReplyProst> {
         pass_message(&self.raft.remote_task_sender, |sender| {
-            RemoteTask::AppendEntries { args, sender }
+            RemoteTask::AppendEntries { args: decode(&args.data), sender }
         })
-        .await
+        .await.map(|reply| AppendEntriesReplyProst { data: encode(&reply) })
     }
 }
 

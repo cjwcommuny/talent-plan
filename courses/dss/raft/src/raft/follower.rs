@@ -2,8 +2,7 @@ use crate::raft::inner::{LocalTask, PeerEndPoint, RemoteTaskResult};
 
 use crate::raft::candidate::Candidate;
 use crate::raft::follower::LoopResult::Shutdown;
-use crate::raft::handle::peer::Peers;
-use crate::raft::handle::Handle;
+use crate::raft::handle::{Handle, MessageHandler};
 use crate::raft::leader::Leader;
 use crate::raft::role::Role;
 use futures::{pin_mut, stream, StreamExt};
@@ -13,13 +12,11 @@ use tokio::select;
 use tokio::time::sleep;
 use tracing::{info, trace_span, warn};
 
-#[derive(Debug)]
-pub struct Follower {
-    pub peers: Peers<Box<dyn PeerEndPoint>>,
-}
+#[derive(Debug, Default)]
+pub struct Follower(());
 
 impl Follower {
-    pub async fn progress(self, handle: &mut Handle) -> Role {
+    pub async fn progress(self, handle: &mut Handle, message_handler: &mut MessageHandler) -> Role {
         let _span = trace_span!("Follower", node_id = handle.node_id).entered();
         let election_timer = stream::once(sleep(Duration::from_millis(
             handle
@@ -33,7 +30,7 @@ impl Follower {
                 _ = election_timer.next() => {
                     break TransitToCandidate;
                 }
-                Some(task) = handle.local_task_receiver.recv() => {
+                Some(task) = message_handler.local_task_receiver.recv() => {
                     let term = handle.election.current_term();
                     match task {
                         LocalTask::AppendEntries { sender, .. } => sender.send(None)
@@ -48,7 +45,7 @@ impl Follower {
                         }
                     }
                 }
-                Some(task) = handle.remote_task_receiver.recv() => {
+                Some(task) = message_handler.remote_task_receiver.recv() => {
                     trace!("term={}, handle remote task", handle.election.current_term());
                     let RemoteTaskResult { transit_to_follower } = task.handle(handle).await;
                     if transit_to_follower {
@@ -76,22 +73,14 @@ enum LoopResult {
     Shutdown,
 }
 
-impl From<Candidate> for Follower {
-    fn from(candidate: Candidate) -> Self {
-        Follower {
-            peers: candidate.peers,
-        }
+impl From<Leader> for Follower {
+    fn from(_: Leader) -> Self {
+        Self(())
     }
 }
 
-impl From<Leader> for Follower {
-    fn from(leader: Leader) -> Self {
-        Follower {
-            peers: leader
-                .peers
-                .into_iter()
-                .map(|(endpoint, ..)| endpoint)
-                .collect(),
-        }
+impl From<Candidate> for Follower {
+    fn from(_: Candidate) -> Self {
+        Self(())
     }
 }

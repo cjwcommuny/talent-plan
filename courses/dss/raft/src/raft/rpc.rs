@@ -3,7 +3,7 @@ use crate::raft::{NodeId, TermId};
 use derive_more::IsVariant;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RequestVoteArgs {
     pub log_state: Option<LogState>,
     pub term: TermId,
@@ -17,7 +17,7 @@ pub struct RequestVoteReply {
 }
 
 /// if `log_length == 0`, then `prev_log_term == 0`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppendEntriesArgs {
     pub term: TermId,
     pub leader_id: NodeId,

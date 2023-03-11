@@ -1,7 +1,8 @@
 use crate::proto::raftpb::raft::Client as RaftClient;
+use crate::proto::raftpb::{decode, encode};
 use crate::raft::handle::election::Election;
 use crate::raft::handle::Logs;
-use crate::raft::inner::{Config, LocalTask, RemoteTask};
+use crate::raft::inner::{Config, LocalTask, PeerEndPoint, RemoteTask};
 use crate::raft::leader::{LogEntry, LogKind};
 use crate::raft::persister::Persister;
 use crate::raft::{ApplyMsg, NodeId, TermId};
@@ -10,6 +11,7 @@ use futures::channel::mpsc::UnboundedSender;
 use futures::SinkExt;
 use num::integer::div_ceil;
 use rand::RngCore;
+use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
 use tokio::sync::mpsc;
 use tracing::instrument;
@@ -22,8 +24,6 @@ pub struct Handle {
     pub election: Election,
     pub logs: Logs,
     pub apply_ch: UnboundedSender<ApplyMsg>,
-    pub remote_task_receiver: mpsc::Receiver<RemoteTask>,
-    pub local_task_receiver: mpsc::Receiver<LocalTask>,
     pub random_generator: Box<dyn RngCore + Send>,
     pub config: Config,
 }
@@ -68,7 +68,7 @@ impl Handle {
         if data.is_empty() {
             None
         } else {
-            Some(labcodec::decode(&data).expect("decoding persistent state error"))
+            Some(decode(&data))
         }
     }
 
@@ -77,9 +77,8 @@ impl Handle {
     /// see paper's Figure 2 for a description of what should be persistent.
     fn persist(&self) {
         let state = self.get_persistent_state();
-        let mut buffer = Vec::new();
-        labcodec::encode(&state, &mut buffer).expect("decoding persistent state error");
-        self.persister.save_raft_state(buffer)
+        let data = encode(&state);
+        self.persister.save_raft_state(data)
     }
 
     fn get_persistent_state(&self) -> PersistentState {
@@ -111,12 +110,9 @@ impl Handle {
     }
 }
 
-#[derive(prost::Message, new)]
+#[derive(new, Serialize, Deserialize, Debug)]
 pub struct PersistentState {
-    #[prost(uint64, tag = "1")]
     pub term: u64,
-    #[prost(uint32, optional, tag = "2")]
     pub voted_for: Option<u32>,
-    #[prost(message, repeated, tag = "3")]
     pub log: Vec<LogEntry>,
 }

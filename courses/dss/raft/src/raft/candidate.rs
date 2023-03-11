@@ -8,10 +8,9 @@ use std::collections::HashSet;
 use std::fmt::Debug;
 
 use crate::raft;
-use crate::raft::common::FutureOutput;
+use crate::raft::common::{with_context, FutureOutput};
 use crate::raft::follower::Follower;
-use crate::raft::handle::peer::Peers;
-use crate::raft::handle::Handle;
+use crate::raft::handle::{Handle, MessageHandler};
 use crate::raft::rpc::{RequestVoteArgs, RequestVoteReply};
 use rand::Rng;
 use std::time::Duration;
@@ -21,21 +20,22 @@ use tracing::{info, trace, trace_span, warn};
 
 /// make the constructor private
 #[derive(Debug)]
-pub struct Candidate {
-    pub peers: Peers<Box<dyn PeerEndPoint>>,
-}
+pub struct Candidate(());
 
 impl From<Follower> for Candidate {
-    fn from(follower: Follower) -> Self {
-        Self {
-            peers: follower.peers,
-        }
+    fn from(_: Follower) -> Self {
+        Self(())
     }
 }
 
 impl Candidate {
-    pub(crate) async fn progress(self, handle: &mut Handle) -> Role {
+    pub(crate) async fn progress(
+        self,
+        handle: &mut Handle,
+        message_handler: &mut MessageHandler,
+    ) -> Role {
         let _span = trace_span!("Candidate", node_id = handle.node_id).entered();
+        let me = handle.node_id;
         handle.increment_term();
         handle.election.voted_for = Some(handle.node_id);
         let args = RequestVoteArgs {
@@ -50,23 +50,18 @@ impl Candidate {
         )));
         let mut votes_received = HashSet::from([handle.node_id]);
         futures::pin_mut!(election_timeout);
-        let majority_threshold = self.peers.majority_threshold();
+        let majority_threshold = message_handler.majority_threshold();
         use LoopResult::{Elected, RestartAsCandidate, Shutdown, TransitToFollower};
+        let peers = &message_handler.peers;
         let vote_result = 'collect_vote: {
             let mut replies: FuturesUnordered<_> = {
                 trace!(
                     "term={}, send vote requests",
                     handle.election.current_term()
                 );
-                self.peers
-                    .iter_except_me()
-                    .map(|(peer_id, peer)| {
-                        peer.as_ref().request_vote(&args).map(
-                            move |result: raft::Result<RequestVoteReply>| {
-                                FutureOutput::new(result, peer_id)
-                            },
-                        )
-                    })
+                message_handler
+                    .node_ids_except(me)
+                    .map(|peer_id| with_context(peers[peer_id].request_vote(args.clone()), peer_id))
                     .collect()
             };
             while votes_received.len() < majority_threshold {
@@ -74,13 +69,13 @@ impl Candidate {
                     _ = election_timeout.next() => {
                         break 'collect_vote RestartAsCandidate;
                     }
-                    Some(task) = handle.remote_task_receiver.recv() => {
+                    Some(task) = message_handler.remote_task_receiver.recv() => {
                         let RemoteTaskResult { transit_to_follower } = task.handle(handle).await;
                         if transit_to_follower {
                             break 'collect_vote TransitToFollower;
                         }
                     }
-                    Some(task) = handle.local_task_receiver.recv() => {
+                    Some(task) = message_handler.local_task_receiver.recv() => {
                         match task {
                             LocalTask::AppendEntries { sender, .. } => sender.send(None).unwrap(),
                             LocalTask::GetTerm(sender) => sender.send(handle.election.current_term()).unwrap(),
@@ -96,7 +91,7 @@ impl Candidate {
                         match reply_result {
                             Ok(reply) => {
                                 if reply.term == current_term && reply.vote_granted {
-                                    votes_received.insert(*peer_id);
+                                    votes_received.insert(peer_id);
                                 } else if reply.term > current_term {
                                     handle.update_current_term(reply.term);
                                     handle.election.voted_for = None;
@@ -121,7 +116,11 @@ impl Candidate {
             RestartAsCandidate => Role::Candidate(self),
             TransitToFollower => Role::Follower(Follower::from(self)),
             Shutdown => Role::Shutdown,
-            Elected => Role::Leader(Leader::from(self, handle.logs.len())),
+            Elected => Role::Leader(Leader::from(
+                self,
+                handle.logs.len(),
+                message_handler.peers.len(),
+            )),
         }
     }
 }

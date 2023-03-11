@@ -1,6 +1,6 @@
-use crate::proto::raftpb::{AppendEntriesArgsProst, AppendEntriesReplyProst};
+use crate::proto::raftpb::{AppendEntriesArgsProst, AppendEntriesReplyProst, decode, encode, RaftClient, RequestVoteArgsProst};
 use crate::raft;
-use crate::raft::handle::Handle;
+use crate::raft::handle::{Handle, MessageHandler};
 use crate::raft::role::{append_entries, request_vote, Role};
 use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply};
 use crate::raft::TermId;
@@ -9,6 +9,7 @@ use derive_more::IsVariant;
 use derive_new::new;
 use std::fmt::{Debug, Formatter, Pointer};
 use std::ops::Range;
+use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
 pub struct Config {
@@ -32,12 +33,13 @@ impl Default for Config {
 pub struct Inner {
     role: Option<Role>,
     handle: Handle,
+    message_handler: MessageHandler,
 }
 
 impl Inner {
     pub async fn raft_main(&mut self) {
         while let role = self.role.take().unwrap() && !matches!(role, Role::Shutdown) {
-            let new_role = role.progress(&mut self.handle).await;
+            let new_role = role.progress(&mut self.handle, &mut self.message_handler).await;
             self.role = Some(new_role);
         }
     }
@@ -100,23 +102,36 @@ pub enum LocalTask {
 /// RPC end points of all peers
 #[async_trait]
 pub trait PeerEndPoint {
-    async fn request_vote(&self, args: &RequestVoteArgs) -> raft::Result<RequestVoteReply>;
-    async fn append_entries(&self, args: &AppendEntriesArgs) -> raft::Result<AppendEntriesReply>;
+    async fn request_vote(&self, args: RequestVoteArgs) -> raft::Result<RequestVoteReply>;
+    async fn append_entries(&self, args: AppendEntriesArgs) -> raft::Result<AppendEntriesReply>;
 }
 
 #[async_trait]
 impl<T> PeerEndPoint for Box<T>
 where
-    T: PeerEndPoint + ?Sized,
+    T: PeerEndPoint + ?Sized + Sync + Send,
 {
-    async fn request_vote(&self, args: &RequestVoteArgs) -> raft::errors::Result<RequestVoteReply> {
-        (**self).request_vote(args)
+    async fn request_vote(&self, args: RequestVoteArgs) -> raft::errors::Result<RequestVoteReply> {
+        (**self).request_vote(args).await
     }
 
     async fn append_entries(
         &self,
-        args: &AppendEntriesArgs,
+        args: AppendEntriesArgs,
     ) -> raft::errors::Result<AppendEntriesReply> {
-        (**self).append_entries(args)
+        (**self).append_entries(args).await
+    }
+}
+
+#[async_trait]
+impl PeerEndPoint for RaftClient {
+    async fn request_vote(&self, args: RequestVoteArgs) -> raft::Result<RequestVoteReply> {
+        let args = RequestVoteArgsProst { data: encode(&args) };
+        self.request_vote(&args).await.map(|prost| decode(&prost.data)).map_err(raft::Error::Rpc)
+    }
+
+    async fn append_entries(&self, args: AppendEntriesArgs) -> raft::Result<AppendEntriesReply> {
+        let args = AppendEntriesArgsProst { data: encode(&args) };
+        self.append_entries(&args).await.map(|prost| decode(&prost.data)).map_err(raft::Error::Rpc)
     }
 }

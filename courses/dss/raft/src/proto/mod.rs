@@ -31,7 +31,7 @@ pub mod raftpb {
         serde_json::to_vec(value).expect(&format!("encode fail: {value:?}"))
     }
 
-    pub fn decode<'a, T: Deserialize<'a>>(data: &[u8]) -> T {
+    pub fn decode<'a, T: Deserialize<'a>>(data: &'a [u8]) -> T {
         serde_json::from_slice(data).expect(&format!("decode fail"))
     }
 

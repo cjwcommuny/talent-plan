@@ -8,7 +8,7 @@ use crate::raft::candidate::Candidate;
 use crate::raft::common::{async_side_effect, side_effect};
 use crate::raft::follower::Follower;
 
-use crate::raft::handle::Handle;
+use crate::raft::handle::{Handle, MessageHandler};
 use crate::raft::leader::{Leader, LogEntry, LogState};
 use crate::raft::rpc::AppendEntriesReplyResult::{
     LogNotContainThisEntry, LogNotMatch, Success, TermCheckFail,
@@ -17,7 +17,7 @@ use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, R
 use crate::raft::{NodeId, TermId};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug)]
+#[derive(Debug, IsVariant)]
 pub enum Role {
     Follower(Follower),
     Candidate(Candidate),
@@ -28,11 +28,15 @@ pub enum Role {
 pub type TransitToFollower = bool;
 
 impl Role {
-    pub(crate) async fn progress(self, handle: &mut Handle) -> Role {
+    pub(crate) async fn progress(
+        self,
+        handle: &mut Handle,
+        message_handler: &mut MessageHandler,
+    ) -> Role {
         match self {
-            Role::Follower(follower) => follower.progress(handle).await,
-            Role::Candidate(candidate) => candidate.progress(handle).await,
-            Role::Leader(leader) => leader.progress(handle).await,
+            Role::Follower(follower) => follower.progress(handle, message_handler).await,
+            Role::Candidate(candidate) => candidate.progress(handle, message_handler).await,
+            Role::Leader(leader) => leader.progress(handle, message_handler).await,
             Role::Shutdown => Role::Shutdown,
         }
     }

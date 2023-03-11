@@ -9,6 +9,7 @@ use std::cmp::max;
 use std::future::Future;
 
 use derive_new::new;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::raft;
@@ -16,8 +17,7 @@ use crate::raft::candidate::Candidate;
 use crate::raft::common::{with_context, FutureOutput};
 use crate::raft::follower::Follower;
 use crate::raft::handle::election::Election;
-use crate::raft::handle::peer::Peers;
-use crate::raft::handle::{Handle, Logs};
+use crate::raft::handle::{Handle, Logs, MessageHandler};
 use crate::raft::leader::LoopResult::TransitToFollower;
 use crate::raft::rpc::AppendEntriesReplyResult::{
     LogNotContainThisEntry, LogNotMatch, Success, TermCheckFail,
@@ -28,7 +28,7 @@ use tokio::time::interval;
 use tracing::{info, instrument, trace, trace_span, warn};
 
 /// inner structure for `ApplyMsg`
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LogKind {
     Command,
     Snapshot,
@@ -40,116 +40,136 @@ pub type MatchLength = usize;
 /// It's impossible that there exists multiple leaders with the same term.
 #[derive(Debug)]
 pub struct Leader {
-    /// for each server, `next_index` is the index of the next log entry to send to that server
+    /// for each server, index of the next log entry to send to that server
+    next_index: Vec<NextIndex>,
     /// different from the Raft paper, `match_length = match_index + 1`
-    pub peers: Peers<(Box<dyn PeerEndPoint>, NextIndex, MatchLength)>,
+    match_length: Vec<MatchLength>,
 }
 
 impl Leader {
-    pub fn from(candidate: Candidate, log_length: usize) -> Self {
-        const INITIAL_MATCH_LENGTH: usize = 0;
-        let peers = Peers::new(
-            candidate.peers.me(),
-            candidate
-                .peers
-                .into_iter()
-                .map(|(node_id, peer)| (node_id, (peer, log_length, INITIAL_MATCH_LENGTH)))
-        );
-        Leader { peers }
+    pub fn from(_: Candidate, log_length: usize, num_servers: usize) -> Self {
+        Leader {
+            next_index: vec![log_length; num_servers],
+            match_length: vec![0; num_servers],
+        }
     }
 
-    pub(crate) async fn progress(mut self, handle: &mut Handle) -> Role {
+    pub(crate) async fn progress(
+        mut self,
+        handle: &mut Handle,
+        message_handler: &mut MessageHandler,
+    ) -> Role {
         let _span = trace_span!("Leader", node_id = handle.node_id).entered();
+        let me = handle.node_id;
         let mut heartbeat_timer = interval(Duration::from_millis(handle.config.heartbeat_cycle));
         use LoopResult::{Shutdown, TransitToFollower};
+        let peers = &message_handler.peers;
         let loop_result: LoopResult = {
             let mut rpc_replies: FuturesUnordered<_> = {
-                self.peers
-                    .iter_except_me()
-                    .map(|(peer_id, (peer, next_index, _))| {
-                        with_context(
-                            replicate_log(handle.node_id, &handle.logs, &handle.election, peer, *next_index),
-                            ReplyContext::new(*peer_id, *next_index),
-                        )
+                let me = handle.node_id;
+                let params: Vec<_> = message_handler
+                    .node_ids_except(me)
+                    .map(|peer_id| {
+                        let next_index = self.next_index[peer_id];
+                        let args = build_append_entries_args(
+                            me,
+                            &handle.election,
+                            &handle.logs,
+                            next_index,
+                        );
+                        (peer_id, next_index, args)
+                    })
+                    .collect();
+                params.into_iter()
+                    .map(|(peer_id, next_index, args)| {
+                        let future = peers[peer_id].append_entries(args);
+                        let context = ReplyContext::new(peer_id, next_index);
+                        with_context(future, context)
                     })
                     .collect()
             };
             loop {
                 select! {
-                _ = heartbeat_timer.tick() => {
-                    trace!("term={}, send heartbeat", handle.election.current_term());
-                    let futures = self
-                        .peers
-                        .iter_except_me()
-                        .map(|(peer_id, (peer, next_index, _))|
-                            with_context(replicate_log(handle.node_id, &handle.logs, &handle.election, peer, *next_index), ReplyContext::new(*peer_id, *next_index))
-                        );
-                    rpc_replies.extend(futures)
-                }
-                Some(FutureOutput { output: result, context: ReplyContext { follower_id, old_next_index }}) = rpc_replies.next() => {
-                    match result {
-                        Ok(reply) => {
-                            match on_receive_append_entries_reply(
-                                &handle.logs,
-                                old_next_index,
-                                reply,
-                                follower_id,
-                                handle.election.current_term()
-                            ) {
-                                Commit{ follower_id, match_length } => {
-                                    let (_, next_index, match_index) = self.peers.get_mut(&follower_id)
-                                        .expect(&format!("follower {follower_id} not in peers"));
-                                    *next_index = match_length;
-                                    *match_index = match_length;
-                                    try_commit_logs(&self, handle).await
-                                }
-                                Retry { follower_id, new_next_index } => {
-                                    let (ref peer, next_index, _) = self.peers
-                                        .get_mut(&follower_id)
-                                        .expect(&format!("{follower_id} not in peers"));
-                                    *next_index = new_next_index;
-                                    rpc_replies.push(with_context(replicate_log(handle.node_id, &handle.logs, &handle.election, peer, *next_index), ReplyContext::new(follower_id, *next_index)));
-                                }
-                                UpdateTermAndTransitToFollower(new_term) => {
-                                    handle.update_current_term(new_term);
-                                    break TransitToFollower;
+                    _ = heartbeat_timer.tick() => {
+                        trace!("term={}, send heartbeat", handle.election.current_term());
+                        let futures = message_handler
+                            .node_ids_except(me)
+                            .map(|peer_id| {
+                                let next_index = self.next_index[peer_id];
+                                let args = build_append_entries_args(me, &handle.election, &handle.logs, next_index);
+                                let future = peers[peer_id].append_entries(args);
+                                let context = ReplyContext::new(peer_id, next_index);
+                                with_context(future, context)
+                            });
+                        rpc_replies.extend(futures)
+                    }
+                    Some(FutureOutput { output: result, context: ReplyContext { follower_id, old_next_index }}) = rpc_replies.next() => {
+                        match result {
+                            Ok(reply) => {
+                                match on_receive_append_entries_reply(
+                                    &handle.logs,
+                                    old_next_index,
+                                    reply,
+                                    follower_id,
+                                    handle.election.current_term()
+                                ) {
+                                    Commit{ follower_id, match_length } => {
+                                        self.next_index[follower_id] = match_length;
+                                        self.match_length[follower_id] = match_length;
+                                        try_commit_logs(&self, handle, message_handler).await
+                                    }
+                                    Retry { follower_id, new_next_index } => {
+                                        self.next_index[follower_id] = new_next_index;
+                                        let args = build_append_entries_args(me, &handle.election, &handle.logs, new_next_index);
+                                        let future = message_handler.peers[follower_id].append_entries(args);
+                                        let context = ReplyContext::new(follower_id, new_next_index);
+                                        rpc_replies.push(with_context(future, context));
+                                    }
+                                    UpdateTermAndTransitToFollower(new_term) => {
+                                        handle.update_current_term(new_term);
+                                        break TransitToFollower;
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => warn!(rpc_error = e.to_string()),
-                    }
-                }
-                Some(task) = handle.local_task_receiver.recv() => {
-                    match task {
-                        LocalTask::AppendEntries { data, sender } => {
-                            trace!("term={}, local task append entries", handle.election.current_term());
-                            let current_term = handle.election.current_term();
-                            let index = handle.add_log(LogKind::Command, data, current_term);
-                            let (_, _, match_length) = self.peers.get_mut(&handle.node_id).expect(&format!("node {} not in peers", handle.node_id));
-                            *match_length = index + 1;
-                            sender.send(Some((index as u64, current_term))).unwrap();
-                            let futures = self
-                                .peers
-                                .iter_except_me()
-                                .map(|(follower_id, (peer, next_index, _))| with_context(replicate_log(handle.node_id, &handle.logs, &handle.election, peer, *next_index), ReplyContext::new(*follower_id, *next_index)));
-                            rpc_replies.extend(futures);
-                        }
-                        LocalTask::GetTerm(sender) => sender.send(handle.election.current_term()).unwrap(),
-                        LocalTask::CheckLeader(sender) => sender.send(true).unwrap(),
-                        LocalTask::Shutdown(sender) => {
-                            sender.send(()).unwrap();
-                            break Shutdown;
+                            Err(e) => warn!(rpc_error = e.to_string()),
                         }
                     }
-                }
-                Some(task) = handle.remote_task_receiver.recv() => {
-                    trace!("handle remote task");
-                    let RemoteTaskResult { transit_to_follower } = task.handle(handle).await;
-                    if transit_to_follower {
-                        break TransitToFollower;
+                    Some(task) = message_handler.local_task_receiver.recv() => {
+                        match task {
+                            LocalTask::AppendEntries { data, sender } => {
+                                trace!("term={}, local task append entries", handle.election.current_term());
+                                let me = handle.node_id;
+                                let current_term = handle.election.current_term();
+                                let index = handle.add_log(LogKind::Command, data, current_term);
+                                self.match_length[me] = index + 1;
+                                sender.send(Some((index as u64, current_term))).unwrap();
+                                let futures = message_handler
+                                    .node_ids_except(me)
+                                    .map(|peer_id| {
+                                        let next_index = self.next_index[peer_id];
+                                        let args = build_append_entries_args(me, &handle.election, &handle.logs, next_index);
+                                        let future = peers[peer_id].append_entries(args);
+                                        let context = ReplyContext::new(peer_id, next_index);
+                                        with_context(future, context)
+                                    });
+                                rpc_replies.extend(futures);
+                            }
+                            LocalTask::GetTerm(sender) => sender.send(handle.election.current_term()).unwrap(),
+                            LocalTask::CheckLeader(sender) => sender.send(true).unwrap(),
+                            LocalTask::Shutdown(sender) => {
+                                sender.send(()).unwrap();
+                                break Shutdown;
+                            }
+                        }
+                    }
+                    Some(task) = message_handler.remote_task_receiver.recv() => {
+                        trace!("handle remote task");
+                        let RemoteTaskResult { transit_to_follower } = task.handle(handle).await;
+                        if transit_to_follower {
+                            break TransitToFollower;
+                        }
                     }
                 }
-            }
             }
         };
         info!(
@@ -250,14 +270,13 @@ enum AppendEntriesResult {
 }
 
 #[instrument(level = "debug")]
-async fn try_commit_logs(leader: &Leader, handle: &mut Handle) {
-    let commit_threshold = leader.peers.majority_threshold();
+async fn try_commit_logs(leader: &Leader, handle: &mut Handle, message_handle: &MessageHandler) {
+    let commit_threshold = message_handle.majority_threshold();
     let compute_acks = |length_threshold| {
         let acks = leader
-            .peers
+            .match_length
             .iter()
-            .map(|(_, (_, _, match_index))| *match_index)
-            .filter(|match_length| *match_length > length_threshold)
+            .filter(|match_length| **match_length > length_threshold)
             .count();
         acks
     };
@@ -269,26 +288,22 @@ async fn try_commit_logs(leader: &Leader, handle: &mut Handle) {
     Handle::apply_messages(&mut handle.apply_ch, messages).await
 }
 
-fn replicate_log<'a, P: PeerEndPoint>(
+fn build_append_entries_args(
     leader_id: NodeId,
-    logs: &'a Logs,
-    election: &'a Election,
-    peer: &'a P,
-    next_index: NextIndex
-) -> impl Future<Output = raft::Result<AppendEntriesReply>> + 'a {
-    let _span = trace_span!("replicate_log").entered();
-    trace!("term={}, {:?}", election.current_term(), logs);
-    let args = AppendEntriesArgs {
+    election: &Election,
+    logs: &Logs,
+    next_index: NextIndex,
+) -> AppendEntriesArgs {
+    AppendEntriesArgs {
         term: election.current_term(),
         leader_id,
         log_state: logs.log_state_before(next_index),
         entries: logs.tail(next_index).map(Clone::clone).collect(),
         leader_commit_length: logs.commit_len(),
-    };
-    peer.append_entries(&args)
+    }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, new)]
+#[derive(Debug, Clone, Eq, PartialEq, new, Serialize, Deserialize)]
 pub struct LogEntry {
     log_kind: LogKind,
     data: Vec<u8>,
@@ -322,7 +337,7 @@ impl From<(usize, LogEntry)> for ApplyMsg {
 }
 
 /// NOTE: `term` should come first, since we implement `PartialOrd` and `Ord` here.
-#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Copy, Clone, new)]
+#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Copy, Clone, new, Serialize, Deserialize)]
 pub struct LogState {
     pub term: TermId,
     pub index: usize,
