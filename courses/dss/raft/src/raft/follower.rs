@@ -32,7 +32,7 @@ impl Follower {
                     break TransitToCandidate;
                 }
                 Some(task) = message_handler.local_task_receiver.recv() => {
-                    let _term = handle.election.current_term();
+                    trace!("term={}, handle local task", handle.election.current_term());
                     match task {
                         LocalTask::AppendEntries { sender, .. } => sender.send(None)
                             .unwrap_or_else(|_| panic!("{}", "term={term}, local task AppendEntries response error")),

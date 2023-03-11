@@ -79,8 +79,11 @@ impl Logs {
         }
     }
 
-    pub fn first_index_with_same_term_with(&self, _index: usize) -> usize {
-        todo!()
+    pub fn first_index_with_same_term_with(&self, index: usize) -> usize {
+        (0..=index)
+            .rev()
+            .find(|i| self.logs[*i].term != self.logs[index].term)
+            .map_or(0, |i| i + 1)
     }
 
     pub fn len(&self) -> usize {
