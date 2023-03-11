@@ -91,8 +91,7 @@ impl Handle {
             self.logs
                 .tail(0)
                 .map(Clone::clone)
-                .map(Into::into)
-                .collect(),
+                .collect()
         )
     }
 }

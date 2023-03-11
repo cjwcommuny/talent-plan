@@ -8,7 +8,7 @@ use crate::raft::common::{async_side_effect, side_effect};
 use crate::raft::follower::Follower;
 
 use crate::raft::handle::Handle;
-use crate::raft::leader::{Leader, LogEntry, LogState};
+use crate::raft::leader::{Leader, LogEntry};
 use crate::raft::message_handler::MessageHandler;
 use crate::raft::rpc::AppendEntriesReplyResult::{
     LogNotContainThisEntry, LogNotMatch, Success, TermCheckFail,
@@ -56,7 +56,7 @@ pub fn request_vote(
     trace!(?handle);
     let log_ok = {
         let self_log_state = handle.logs.log_state();
-        let candidate_log_state: Option<LogState> = args.log_state.map(Into::into);
+        let candidate_log_state = args.log_state;
         trace!(?candidate_log_state, ?self_log_state);
         candidate_log_state >= self_log_state
     };
@@ -106,7 +106,6 @@ pub async fn append_entries(
         handle.election.voted_for = Some(args.leader_id as NodeId);
         let index_remote_term_and_local_term =
             args.log_state
-                .map(Into::<LogState>::into)
                 .map(|remote_state| {
                     let index = remote_state.index;
                     (
@@ -153,7 +152,7 @@ pub async fn append_entries(
         async_side_effect(async {
             if let Some(new_log_begin) = new_log_begin {
                 trace!("commit logs from {new_log_begin}");
-                let entries: Vec<LogEntry> = args.entries.into_iter().map(Into::into).collect();
+                let entries: Vec<LogEntry> = args.entries.into_iter().collect();
                 handle.update_log_tail(new_log_begin, entries);
                 let logs = handle.logs.commit_logs(args.leader_commit_length);
                 Handle::apply_messages(&mut handle.apply_ch, logs).await;
