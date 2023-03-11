@@ -1,15 +1,18 @@
-use crate::proto::raftpb::{AppendEntriesArgsProst, AppendEntriesReplyProst, decode, encode, RaftClient, RequestVoteArgsProst};
+use crate::proto::raftpb::{
+    decode, encode, AppendEntriesArgsProst, RaftClient, RequestVoteArgsProst,
+};
 use crate::raft;
-use crate::raft::handle::{Handle, MessageHandler};
+use crate::raft::handle::Handle;
 use crate::raft::role::{append_entries, request_vote, Role};
 use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply};
 use crate::raft::TermId;
 use async_trait::async_trait;
-use derive_more::IsVariant;
+
 use derive_new::new;
-use std::fmt::{Debug, Formatter, Pointer};
+use std::fmt::{Debug, Formatter};
 use std::ops::Range;
-use tokio::sync::mpsc;
+
+use crate::raft::message_handler::MessageHandler;
 use tokio::sync::oneshot;
 
 pub struct Config {
@@ -126,12 +129,22 @@ where
 #[async_trait]
 impl PeerEndPoint for RaftClient {
     async fn request_vote(&self, args: RequestVoteArgs) -> raft::Result<RequestVoteReply> {
-        let args = RequestVoteArgsProst { data: encode(&args) };
-        self.request_vote(&args).await.map(|prost| decode(&prost.data)).map_err(raft::Error::Rpc)
+        let args = RequestVoteArgsProst {
+            data: encode(&args),
+        };
+        self.request_vote(&args)
+            .await
+            .map(|prost| decode(&prost.data))
+            .map_err(raft::Error::Rpc)
     }
 
     async fn append_entries(&self, args: AppendEntriesArgs) -> raft::Result<AppendEntriesReply> {
-        let args = AppendEntriesArgsProst { data: encode(&args) };
-        self.append_entries(&args).await.map(|prost| decode(&prost.data)).map_err(raft::Error::Rpc)
+        let args = AppendEntriesArgsProst {
+            data: encode(&args),
+        };
+        self.append_entries(&args)
+            .await
+            .map(|prost| decode(&prost.data))
+            .map_err(raft::Error::Rpc)
     }
 }

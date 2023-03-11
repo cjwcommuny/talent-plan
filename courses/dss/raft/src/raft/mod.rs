@@ -23,6 +23,7 @@ mod follower;
 mod handle;
 mod inner;
 mod leader;
+mod message_handler;
 pub mod persister;
 mod role;
 mod rpc;
@@ -33,9 +34,10 @@ use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
 use crate::raft::common::set_panic_with_log;
-use crate::raft::handle::MessageHandler;
 
-use crate::raft::inner::{Config, Inner, LocalTask, PeerEndPoint};
+use crate::raft::inner::{Config, Inner, LocalTask};
+use crate::raft::message_handler::MessageHandler;
+
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
 /// server, via the `apply_ch` passed to `Raft::new`.
@@ -145,9 +147,12 @@ impl Raft {
                 .build()
         };
         let message_handler = MessageHandler::new(
-            peers.into_iter().map(|client| Box::new(client) as _).collect(),
+            peers
+                .into_iter()
+                .map(|client| Box::new(client) as _)
+                .collect(),
             remote_task_receiver,
-            local_task_receiver
+            local_task_receiver,
         );
 
         // different node should has different seeds
@@ -158,13 +163,12 @@ impl Raft {
             raft_runtime.block_on(raft_inner.raft_main());
         });
 
-        let raft = Raft {
+        Raft {
             remote_task_sender,
             local_task_sender,
             thread_handle: Some(join_handle),
             node_id,
-        };
-        raft
+        }
     }
 
     #[allow(dead_code)]
@@ -320,9 +324,15 @@ impl RaftService for Node {
     ) -> labrpc::Result<RequestVoteReplyProst> {
         // Your code here (2A, 2B).
         pass_message(&self.raft.remote_task_sender, |sender| {
-            RemoteTask::RequestVote { args: decode(&args.data), sender }
+            RemoteTask::RequestVote {
+                args: decode(&args.data),
+                sender,
+            }
         })
-        .await.map(|reply| RequestVoteReplyProst { data: encode(&reply) })
+        .await
+        .map(|reply| RequestVoteReplyProst {
+            data: encode(&reply),
+        })
     }
 
     async fn append_entries(
@@ -330,9 +340,15 @@ impl RaftService for Node {
         args: AppendEntriesArgsProst,
     ) -> labrpc::Result<AppendEntriesReplyProst> {
         pass_message(&self.raft.remote_task_sender, |sender| {
-            RemoteTask::AppendEntries { args: decode(&args.data), sender }
+            RemoteTask::AppendEntries {
+                args: decode(&args.data),
+                sender,
+            }
         })
-        .await.map(|reply| AppendEntriesReplyProst { data: encode(&reply) })
+        .await
+        .map(|reply| AppendEntriesReplyProst {
+            data: encode(&reply),
+        })
     }
 }
 

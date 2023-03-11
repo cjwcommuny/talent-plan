@@ -1,28 +1,27 @@
-use crate::proto::raftpb::{AppendEntriesArgsProst, RaftClient};
+use crate::raft::inner::LocalTask;
 use crate::raft::inner::RemoteTaskResult;
-use crate::raft::inner::{LocalTask, PeerEndPoint};
 use crate::raft::leader::AppendEntriesResult::{Commit, Retry, UpdateTermAndTransitToFollower};
 use crate::raft::role::Role;
 use crate::raft::{ApplyMsg, NodeId, TermId};
-use futures::{stream::FuturesUnordered, FutureExt, StreamExt};
+use futures::{stream::FuturesUnordered, StreamExt};
 use std::cmp::max;
-use std::future::Future;
+use std::cmp::Ordering::{Equal, Greater, Less};
 
 use derive_new::new;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-use crate::raft;
 use crate::raft::candidate::Candidate;
 use crate::raft::common::{with_context, FutureOutput};
 use crate::raft::follower::Follower;
 use crate::raft::handle::election::Election;
-use crate::raft::handle::{Handle, Logs, MessageHandler};
-use crate::raft::leader::LoopResult::TransitToFollower;
+use crate::raft::handle::{Handle, Logs};
+
+use crate::raft::message_handler::MessageHandler;
 use crate::raft::rpc::AppendEntriesReplyResult::{
     LogNotContainThisEntry, LogNotMatch, Success, TermCheckFail,
 };
-use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply, AppendEntriesReplyResult};
+use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply};
 use tokio::select;
 use tokio::time::interval;
 use tracing::{info, instrument, trace, trace_span, warn};
@@ -80,7 +79,8 @@ impl Leader {
                         (peer_id, next_index, args)
                     })
                     .collect();
-                params.into_iter()
+                params
+                    .into_iter()
                     .map(|(peer_id, next_index, args)| {
                         let future = peers[peer_id].append_entries(args);
                         let context = ReplyContext::new(peer_id, next_index);
@@ -198,16 +198,19 @@ fn on_receive_append_entries_reply(
     follower_id: NodeId,
     current_term: TermId,
 ) -> AppendEntriesResult {
-    if reply.term > current_term {
-        UpdateTermAndTransitToFollower(reply.term)
-    } else if reply.term == current_term {
-        match reply.result {
+    match reply.term.cmp(&current_term) {
+        Greater => UpdateTermAndTransitToFollower(reply.term),
+        Less => Retry {
+            follower_id,
+            new_next_index: old_next_index,
+        },
+        Equal => match reply.result {
             Success { match_length } => Commit {
                 follower_id,
                 match_length,
             },
             LogNotMatch {
-                term_conflicted,
+                term_conflicted: _,
                 first_index_of_term_conflicted,
             } => Retry {
                 follower_id,
@@ -226,17 +229,12 @@ fn on_receive_append_entries_reply(
             },
             TermCheckFail => {
                 // TODO: make this state unrepresentable
-                panic!(format!(
+                panic!(
                     "reply.term ({}) should larger than current_term ({current_term})",
                     reply.term
-                ))
+                )
             }
-        }
-    } else {
-        Retry {
-            follower_id,
-            new_next_index: old_next_index,
-        }
+        },
     }
 }
 

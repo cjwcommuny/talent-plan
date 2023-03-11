@@ -79,7 +79,7 @@ impl Logs {
         }
     }
 
-    pub fn first_index_with_same_term_with(&self, index: usize) -> usize {
+    pub fn first_index_with_same_term_with(&self, _index: usize) -> usize {
         todo!()
     }
 

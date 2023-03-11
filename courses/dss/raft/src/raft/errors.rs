@@ -1,4 +1,3 @@
-use crate::raft::NodeId;
 use std::{error, fmt, result};
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -28,11 +28,11 @@ pub mod raftpb {
     }
 
     pub fn encode<T: Serialize + Debug>(value: &T) -> Vec<u8> {
-        serde_json::to_vec(value).expect(&format!("encode fail: {value:?}"))
+        serde_json::to_vec(value).unwrap_or_else(|_| panic!("{}", "encode fail: {value:?}"))
     }
 
     pub fn decode<'a, T: Deserialize<'a>>(data: &'a [u8]) -> T {
-        serde_json::from_slice(data).expect(&format!("decode fail"))
+        serde_json::from_slice(data).expect("decode fail")
     }
 
     labrpc::service! {

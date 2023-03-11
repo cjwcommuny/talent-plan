@@ -1,8 +1,8 @@
-use std::fmt::{Debug, Formatter};
 use crate::raft::inner::{LocalTask, PeerEndPoint, RemoteTask};
 use crate::raft::NodeId;
 use derive_new::new;
 use num::integer::div_ceil;
+use std::fmt::{Debug, Formatter};
 use tokio::sync::mpsc;
 
 #[derive(new)]

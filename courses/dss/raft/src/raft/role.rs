@@ -3,19 +3,18 @@ use std::cmp::max;
 
 use tracing::{instrument, trace};
 
-use crate::proto::raftpb::{AppendEntriesArgsProst, AppendEntriesReplyProst};
 use crate::raft::candidate::Candidate;
 use crate::raft::common::{async_side_effect, side_effect};
 use crate::raft::follower::Follower;
 
-use crate::raft::handle::{Handle, MessageHandler};
+use crate::raft::handle::Handle;
 use crate::raft::leader::{Leader, LogEntry, LogState};
+use crate::raft::message_handler::MessageHandler;
 use crate::raft::rpc::AppendEntriesReplyResult::{
     LogNotContainThisEntry, LogNotMatch, Success, TermCheckFail,
 };
 use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply};
-use crate::raft::{NodeId, TermId};
-use serde::{Deserialize, Serialize};
+use crate::raft::NodeId;
 
 #[derive(Debug, IsVariant)]
 pub enum Role {
@@ -66,7 +65,7 @@ pub fn request_vote(
         let voted_for = handle.election.voted_for;
         args.term > current_term
             || (args.term == current_term
-                && (voted_for.is_none() || voted_for == Some(args.candidate_id as usize)))
+                && (voted_for.is_none() || voted_for == Some(args.candidate_id)))
     };
     let vote_granted = log_ok && term_ok;
     trace!(log_ok, term_ok, vote_granted);
@@ -78,7 +77,7 @@ pub fn request_vote(
     let result = (reply, transit_to_follower);
     side_effect(|| {
         if vote_granted {
-            handle.election.voted_for = Some(args.candidate_id as usize);
+            handle.election.voted_for = Some(args.candidate_id);
         }
         if args.term > handle.election.current_term() {
             handle.update_current_term(args.term);
@@ -157,7 +156,7 @@ pub async fn append_entries(
                 trace!("commit logs from {new_log_begin}");
                 let entries: Vec<LogEntry> = args.entries.into_iter().map(Into::into).collect();
                 handle.update_log_tail(new_log_begin, entries);
-                let logs = handle.logs.commit_logs(args.leader_commit_length as usize);
+                let logs = handle.logs.commit_logs(args.leader_commit_length);
                 Handle::apply_messages(&mut handle.apply_ch, logs).await;
             }
             handle.update_current_term(args.term);

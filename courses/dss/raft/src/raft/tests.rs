@@ -31,7 +31,7 @@ fn random_entry(rnd: &mut ThreadRng) -> Entry {
 }
 
 fn init_logger(test_name: &str) -> DefaultGuard {
-    let file = File::create(Path::new("../logs").join(&format!("{}.log", test_name))).unwrap();
+    let file = File::create(Path::new("../logs").join(format!("{}.log", test_name))).unwrap();
     let subscriber = tracing_subscriber::fmt()
         .with_file(false)
         .with_line_number(false)
@@ -969,7 +969,7 @@ fn test_figure_8_unreliable_2c() {
 
         if (random.gen::<usize>() % 1000) < 100 {
             let ms = random.gen::<u64>() % (RAFT_ELECTION_TIMEOUT.as_millis() as u64 / 2);
-            thread::sleep(Duration::from_millis(ms as u64));
+            thread::sleep(Duration::from_millis(ms));
         } else {
             let ms = random.gen::<u64>() % 13;
             thread::sleep(Duration::from_millis(ms));

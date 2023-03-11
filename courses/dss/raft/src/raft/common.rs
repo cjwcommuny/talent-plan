@@ -1,5 +1,5 @@
 use derive_new::new;
-use futures::{future, FutureExt};
+use futures::FutureExt;
 use std::future::Future;
 use std::ops::Deref;
 use std::panic;

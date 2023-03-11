@@ -1,16 +1,17 @@
-use crate::raft::inner::{LocalTask, PeerEndPoint, RemoteTaskResult};
+use crate::raft::inner::{LocalTask, RemoteTaskResult};
 
 use crate::raft::candidate::Candidate;
-use crate::raft::follower::LoopResult::Shutdown;
-use crate::raft::handle::{Handle, MessageHandler};
+
+use crate::raft::handle::Handle;
 use crate::raft::leader::Leader;
+use crate::raft::message_handler::MessageHandler;
 use crate::raft::role::Role;
 use futures::{pin_mut, stream, StreamExt};
 use rand::Rng;
 use std::time::Duration;
 use tokio::select;
 use tokio::time::sleep;
-use tracing::{info, trace_span, warn};
+use tracing::{info, trace_span};
 
 #[derive(Debug, Default)]
 pub struct Follower(());
@@ -31,16 +32,16 @@ impl Follower {
                     break TransitToCandidate;
                 }
                 Some(task) = message_handler.local_task_receiver.recv() => {
-                    let term = handle.election.current_term();
+                    let _term = handle.election.current_term();
                     match task {
                         LocalTask::AppendEntries { sender, .. } => sender.send(None)
-                            .expect(&format!("term={term}, local task AppendEntries response error")),
+                            .unwrap_or_else(|_| panic!("{}", "term={term}, local task AppendEntries response error")),
                         LocalTask::GetTerm(sender) => sender.send(handle.election.current_term())
-                            .expect(&format!("term={term}, local task GetTerm response error")),
+                            .unwrap_or_else(|_| panic!("{}", "term={term}, local task GetTerm response error")),
                         LocalTask::CheckLeader(sender) => sender.send(false)
-                            .expect(&format!("term={term}, local task CheckLeader response error")),
+                            .unwrap_or_else(|_| panic!("{}", "term={term}, local task CheckLeader response error")),
                         LocalTask::Shutdown(sender) => {
-                            sender.send(()).expect(&format!("term={term}, local task Shutdown response error"));
+                            sender.send(()).unwrap_or_else(|_| panic!("{}", "term={term}, local task Shutdown response error"));
                             break Shutdown;
                         }
                     }
