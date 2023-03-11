@@ -116,12 +116,11 @@ pub async fn append_entries(
                     )
                 });
         let (result, new_log_begin) = match index_remote_term_and_local_term {
-            None => (
-                LogNotContainThisEntry {
-                    log_len: handle.logs.len(),
-                },
-                Some(0),
-            ),
+            None => {
+                let new_log_begin = 0;
+                let match_length = new_log_begin + args.entries.len();
+                (Success { match_length }, Some(new_log_begin))
+            }
             Some((index, remote_term, Some(local_term))) if remote_term == local_term => {
                 let new_log_begin = index + 1;
                 let match_length = new_log_begin + args.entries.len();

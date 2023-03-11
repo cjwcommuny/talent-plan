@@ -190,7 +190,7 @@ enum LoopResult {
     Shutdown,
 }
 
-#[instrument(ret, level = "trace")]
+#[instrument(skip_all, ret, level = "trace")]
 fn on_receive_append_entries_reply(
     logs: &Logs,
     old_next_index: usize,
@@ -198,6 +198,9 @@ fn on_receive_append_entries_reply(
     follower_id: NodeId,
     current_term: TermId,
 ) -> AppendEntriesResult {
+    trace!(old_next_index, follower_id, current_term);
+    trace!(?reply);
+    trace!(?logs);
     match reply.term.cmp(&current_term) {
         Greater => UpdateTermAndTransitToFollower(reply.term),
         Less => Retry {
