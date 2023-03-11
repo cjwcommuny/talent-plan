@@ -136,9 +136,7 @@ impl Raft {
                     persistent_state.term,
                     persistent_state.voted_for.map(|id| id as NodeId),
                 ))
-                .logs(Logs::with_logs(
-                    persistent_state.log.into_iter().collect(),
-                ))
+                .logs(Logs::with_logs(persistent_state.log.into_iter().collect()))
                 .build()
         } else {
             handle_builder

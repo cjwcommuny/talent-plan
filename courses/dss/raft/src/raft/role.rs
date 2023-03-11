@@ -8,13 +8,12 @@ use crate::raft::common::{async_side_effect, side_effect};
 use crate::raft::follower::Follower;
 
 use crate::raft::handle::Handle;
-use crate::raft::leader::{Leader, LogEntry};
+use crate::raft::leader::{Leader, LogState};
 use crate::raft::message_handler::MessageHandler;
 use crate::raft::rpc::AppendEntriesReplyResult::{
     LogNotContainThisEntry, LogNotMatch, Success, TermCheckFail,
 };
 use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply};
-use crate::raft::NodeId;
 
 #[derive(Debug, IsVariant)]
 pub enum Role {
@@ -103,61 +102,56 @@ pub async fn append_entries(
         (reply, false)
     } else {
         trace!("term_ok = true");
-        handle.election.voted_for = Some(args.leader_id as NodeId);
-        let index_remote_term_and_local_term =
-            args.log_state
-                .map(|remote_state| {
-                    let index = remote_state.index;
-                    (
-                        index,
-                        remote_state.term,
-                        handle.logs.get(remote_state.index).map(|entry| entry.term),
-                    )
-                });
+        let index_remote_term_and_local_term = args.log_state.map(
+            |LogState {
+                 term: remote_term,
+                 index,
+             }| { (index, remote_term, handle.logs.get_term(index)) },
+        );
         let (result, new_log_begin) = match index_remote_term_and_local_term {
             None => {
                 let new_log_begin = 0;
                 let match_length = new_log_begin + args.entries.len();
                 (Success { match_length }, Some(new_log_begin))
             }
-            Some((index, remote_term, Some(local_term))) if remote_term == local_term => {
-                let new_log_begin = index + 1;
-                let match_length = new_log_begin + args.entries.len();
-                (Success { match_length }, Some(new_log_begin))
+            Some((index, remote_term, Some(local_term))) => {
+                if remote_term == local_term {
+                    let new_log_begin = index + 1;
+                    let match_length = new_log_begin + args.entries.len();
+                    (Success { match_length }, Some(new_log_begin))
+                } else {
+                    let first_index_of_term_conflicted =
+                        handle.logs.first_index_with_same_term_with(index);
+                    let result = LogNotMatch {
+                        term_conflicted: local_term,
+                        first_index_of_term_conflicted,
+                    };
+                    (result, None)
+                }
             }
-            Some((index, _, Some(local_term))) => (
-                LogNotMatch {
-                    term_conflicted: local_term,
-                    first_index_of_term_conflicted: handle
-                        .logs
-                        .first_index_with_same_term_with(index),
-                },
-                None,
-            ),
             Some((index, _, None)) => {
                 assert!(index >= handle.logs.len());
-                (
-                    LogNotContainThisEntry {
-                        log_len: handle.logs.len(),
-                    },
-                    None,
-                )
+                let result = LogNotContainThisEntry {
+                    log_len: handle.logs.len(),
+                };
+                (result, None)
             }
         };
+        // args.term >= current_term
         let reply = AppendEntriesReply {
-            term: max(handle.election.current_term(), args.term),
+            term: args.term,
             result,
         };
         // side effect
         async_side_effect(async {
             if let Some(new_log_begin) = new_log_begin {
                 trace!("commit logs from {new_log_begin}");
-                let entries: Vec<LogEntry> = args.entries.into_iter().collect();
-                handle.update_log_tail(new_log_begin, entries);
+                handle.update_log_tail(new_log_begin, args.entries);
                 let logs = handle.logs.commit_logs(args.leader_commit_length);
                 Handle::apply_messages(&mut handle.apply_ch, logs).await;
             }
             handle.update_current_term(args.term);
+            handle.election.voted_for = Some(args.leader_id);
         })
         .await;
         (reply, true)

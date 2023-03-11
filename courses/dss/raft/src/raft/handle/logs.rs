@@ -86,6 +86,10 @@ impl Logs {
             .map_or(0, |i| i + 1)
     }
 
+    pub fn get_term(&self, index: usize) -> Option<TermId> {
+        self.get(index).map(|entry| entry.term)
+    }
+
     pub fn len(&self) -> usize {
         self.logs.len()
     }

@@ -88,10 +88,7 @@ impl Handle {
         PersistentState::new(
             self.election.current_term(),
             self.election.voted_for.map(|id| id as u32),
-            self.logs
-                .tail(0)
-                .map(Clone::clone)
-                .collect()
+            self.logs.tail(0).map(Clone::clone).collect(),
         )
     }
 }
