@@ -46,7 +46,7 @@ impl Default for Role {
     }
 }
 
-#[instrument(skip_all, fields(node_id = handle.node_id), level = "trace")]
+#[instrument(skip_all, level = "trace")]
 pub fn request_vote(
     args: &RequestVoteArgs,
     handle: &mut Handle,

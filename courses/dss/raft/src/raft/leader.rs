@@ -4,7 +4,6 @@ use crate::raft::leader::AppendEntriesResult::{Commit, Retry, UpdateTermAndTrans
 use crate::raft::role::Role;
 use crate::raft::{ApplyMsg, NodeId, TermId};
 use futures::{stream::FuturesUnordered, StreamExt};
-use std::cmp::max;
 use std::cmp::Ordering::{Equal, Greater, Less};
 
 use derive_new::new;
@@ -213,19 +212,25 @@ fn on_receive_append_entries_reply(
                 match_length,
             },
             LogNotMatch {
-                term_conflicted: _,
+                term_conflicted,
                 first_index_of_term_conflicted,
-            } => Retry {
-                follower_id,
-                new_next_index: max(
-                    first_index_of_term_conflicted,
-                    logs.first_index_with_same_term_with(
-                        old_next_index
-                            .checked_sub(1)
-                            .expect("the log_state in AppendEntriesArgs should not be None"),
-                    ),
-                ), // TODO: make this state unrepresentable
-            },
+            } => {
+                let new_next_index = (first_index_of_term_conflicted..old_next_index)
+                    .rev()
+                    .find(|index| {
+                        logs.get(*index)
+                            .unwrap_or_else(|| {
+                                panic!("index {} out of range {}", *index, logs.len())
+                            })
+                            .term
+                            == term_conflicted
+                    })
+                    .map_or(0, |index| index + 1);
+                Retry {
+                    follower_id,
+                    new_next_index,
+                }
+            }
             LogNotContainThisEntry { log_len } => Retry {
                 follower_id,
                 new_next_index: log_len,
