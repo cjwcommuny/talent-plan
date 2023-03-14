@@ -90,6 +90,7 @@ impl Candidate {
                         match reply_result {
                             Ok(reply) => {
                                 if reply.term == current_term && reply.vote_granted {
+                                    trace!("receive vote granted from {peer_id}");
                                     votes_received.insert(peer_id);
                                 } else if reply.term > current_term {
                                     handle.update_current_term(reply.term);

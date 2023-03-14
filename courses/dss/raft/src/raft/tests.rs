@@ -835,11 +835,14 @@ fn test_figure_8_2c() {
     cfg.begin("Test (2C): Figure 8");
 
     let mut random = rand::thread_rng();
+    info!("one random entry");
     cfg.one(random_entry(&mut random), 1, true);
 
     let mut nup = servers;
+    info!("2");
     for _iters in 0..1000 {
         let mut leader = None;
+        info!("2.1");
         for i in 0..servers {
             let mut rafts = cfg.rafts.lock().unwrap();
             if let Some(Some(raft)) = rafts.get_mut(i) {
@@ -849,6 +852,7 @@ fn test_figure_8_2c() {
             }
         }
 
+        info!("2.2");
         if (random.gen::<usize>() % 1000) < 100 {
             let ms = random.gen::<u64>() % ((RAFT_ELECTION_TIMEOUT.as_millis() / 2) as u64);
             thread::sleep(Duration::from_millis(ms));
@@ -857,11 +861,13 @@ fn test_figure_8_2c() {
             thread::sleep(Duration::from_millis(ms));
         }
 
+        info!("2.3");
         if let Some(leader) = leader {
             cfg.crash1(leader);
             nup -= 1;
         }
 
+        info!("2.4");
         if nup < 3 {
             let s = random.gen::<usize>() % servers;
             if cfg.rafts.lock().unwrap().get(s).unwrap().is_none() {
@@ -872,6 +878,7 @@ fn test_figure_8_2c() {
         }
     }
 
+    info!("3");
     for i in 0..servers {
         if cfg.rafts.lock().unwrap().get(i).unwrap().is_none() {
             cfg.start1(i);
@@ -879,6 +886,7 @@ fn test_figure_8_2c() {
         }
     }
 
+    info!("one final random entry");
     cfg.one(random_entry(&mut random), servers, true);
 
     cfg.end();

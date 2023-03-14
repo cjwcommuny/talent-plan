@@ -275,6 +275,10 @@ enum AppendEntriesResult {
     },
 }
 
+/// A log can be committed
+/// iff
+/// 1. the log is replicated on the majority of servers
+/// 2. the log with max term that is replicated on the majority of servers is from current term
 #[instrument(level = "debug")]
 async fn try_commit_logs(leader: &Leader, handle: &mut Handle, message_handle: &MessageHandler) {
     let commit_threshold = message_handle.majority_threshold();
@@ -290,8 +294,21 @@ async fn try_commit_logs(leader: &Leader, handle: &mut Handle, message_handle: &
     let new_commit_length = (handle.logs.commit_len()..handle.logs.len())
         .find(|match_length| compute_acks(*match_length) < commit_threshold)
         .unwrap_or(handle.logs.len());
-    let messages = handle.logs.commit_logs(new_commit_length);
-    Handle::apply_messages(&mut handle.apply_ch, messages).await
+    let nonempty_commits = new_commit_length > handle.logs.commit_len();
+    // lazy condition
+    let from_current_term = || {
+        handle
+            .logs
+            .get(new_commit_length - 1) // can overflow if new_commit_length == handle.logs.commit_len()
+            .expect("should never fail")
+            .term
+            == handle.election.current_term()
+    };
+    // Only log entries from the leader’s current term are committed by counting replicas
+    if nonempty_commits && from_current_term() {
+        let messages = handle.logs.commit_logs(new_commit_length);
+        Handle::apply_messages(&mut handle.apply_ch, messages).await
+    }
 }
 
 fn build_append_entries_args(
