@@ -16,11 +16,11 @@ async-trait = "0.1"
 futures = "0.3"
 futures-timer = "3.0"
 log = "0.4"
-prost = "0.6"
-prost-derive = "0.6"
+prost = "0.11.8"
+prost-derive = "0.11.8"
 rand = "0.8"
-tokio = { version = "1", features = ["full"] }
-tracing = { version = "0.1", features = ["attributes"] }
+tokio = { version = "1.26.0", features = ["full"] }
+tracing = { version = "0.1.37", features = ["attributes"] }
 num = "0.4"
 either = "1.6"
 assert2 = "0.3"
@@ -39,4 +39,4 @@ linearizability = { path = "../linearizability"}
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "ansi"] }
 
 [build-dependencies]
-prost-build = "0.6"
+prost-build = "0.11.8"
