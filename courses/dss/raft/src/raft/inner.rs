@@ -34,16 +34,21 @@ impl Default for Config {
 
 #[derive(new)]
 pub struct Inner {
-    role: Option<Role>,
+    role: Role,
     handle: Handle,
     message_handler: MessageHandler,
 }
 
 impl Inner {
-    pub async fn raft_main(&mut self) {
-        while let role = self.role.take().unwrap() && !matches!(role, Role::Shutdown) {
-            let new_role = role.progress(&mut self.handle, &mut self.message_handler).await;
-            self.role = Some(new_role);
+    pub async fn raft_main(self) {
+        let Inner {
+            mut role,
+            mut handle,
+            mut message_handler,
+        } = self;
+
+        while !matches!(role, Role::Shutdown) {
+            role = role.progress(&mut handle, &mut message_handler).await;
         }
     }
 }

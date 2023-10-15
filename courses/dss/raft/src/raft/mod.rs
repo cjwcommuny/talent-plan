@@ -157,7 +157,7 @@ impl Raft {
         let join_handle = std::thread::spawn(move || {
             let dispatch = &dispatch;
             let _guard = tracing::dispatcher::set_default(dispatch);
-            let mut raft_inner = Inner::new(Some(Role::default()), handle, message_handler);
+            let raft_inner = Inner::new(Role::default(), handle, message_handler);
             raft_runtime.block_on(raft_inner.raft_main());
         });
 
