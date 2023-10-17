@@ -10,7 +10,7 @@ fn main() {
         println!("begin test {}", index);
         let output = Command::new("cargo")
             .env("RUST_LOG", "raft=trace")
-            .args(["test", "--package", "raft", "--", "--test", &test_name])
+            .args(["test", "--package", "raft", "--", "--nocapture", "--test", &test_name])
             .output()
             .expect("failed to execute process");
 

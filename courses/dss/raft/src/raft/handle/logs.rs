@@ -3,6 +3,7 @@ use crate::raft::leader::{LogEntry, LogKind, LogState};
 use crate::raft::TermId;
 use assert2::assert;
 use either::Either;
+use more_asserts::assert_le;
 use std::cmp::min;
 use std::fmt::{Debug, Formatter};
 use std::iter::empty;
@@ -60,12 +61,7 @@ impl Logs {
             .unwrap_or(max_offset);
         let mutation_begin = tail_begin + mutation_offset;
         // must not modify committed logs
-        assert!(
-            self.commit_length <= mutation_begin,
-            "{}, {}",
-            self.commit_length,
-            mutation_begin
-        );
+        assert_le!(self.commit_length, mutation_begin);
         self.logs
             .splice(mutation_begin.., entries.drain(mutation_offset..));
     }
