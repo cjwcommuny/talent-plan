@@ -24,6 +24,7 @@ mod handle;
 mod inner;
 mod leader;
 mod message_handler;
+mod outdated_message;
 pub mod persister;
 mod role;
 mod rpc;
@@ -37,6 +38,10 @@ use crate::raft::common::set_panic_with_log;
 
 use crate::raft::inner::{Config, Inner, LocalTask};
 use crate::raft::message_handler::MessageHandler;
+use crate::raft::outdated_message::{
+    IdAndSerialManager, OutdatedMessageDiscarder, WithIdAndSerial,
+};
+use crate::raft::rpc::{AppendEntriesArgs, RequestVoteArgs};
 
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
@@ -147,7 +152,7 @@ impl Raft {
         let message_handler = MessageHandler::new(
             peers
                 .into_iter()
-                .map(|client| Box::new(client) as _)
+                .map(|client| Box::new(IdAndSerialManager::new(client)) as _)
                 .collect(),
             remote_task_receiver,
             local_task_receiver,
@@ -205,6 +210,7 @@ impl Raft {
 pub struct Node {
     // Your code here.
     raft: Arc<Raft>,
+    outdated_message_discarder: Arc<OutdatedMessageDiscarder>,
 }
 
 impl Node {
@@ -213,6 +219,7 @@ impl Node {
         // Your code here.
         Node {
             raft: Arc::new(raft),
+            outdated_message_discarder: Arc::new(OutdatedMessageDiscarder::new()),
         }
     }
 
@@ -320,33 +327,34 @@ impl RaftService for Node {
         &self,
         args: RequestVoteArgsProst,
     ) -> labrpc::Result<RequestVoteReplyProst> {
-        // Your code here (2A, 2B).
-        pass_message(&self.raft.remote_task_sender, |sender| {
-            RemoteTask::RequestVote {
-                args: decode(&args.data),
-                sender,
-            }
-        })
-        .await
-        .map(|reply| RequestVoteReplyProst {
-            data: encode(&reply),
-        })
+        let args: WithIdAndSerial<RequestVoteArgs> = decode(&args.data);
+        match self.outdated_message_discarder.may_discard(args) {
+            Ok(args) => pass_message(&self.raft.remote_task_sender, |sender| {
+                RemoteTask::RequestVote { args, sender }
+            })
+            .await
+            .map(|reply| RequestVoteReplyProst {
+                data: encode(&reply),
+            }),
+            Err(e) => Err(e),
+        }
     }
 
     async fn append_entries(
         &self,
         args: AppendEntriesArgsProst,
     ) -> labrpc::Result<AppendEntriesReplyProst> {
-        pass_message(&self.raft.remote_task_sender, |sender| {
-            RemoteTask::AppendEntries {
-                args: decode(&args.data),
-                sender,
-            }
-        })
-        .await
-        .map(|reply| AppendEntriesReplyProst {
-            data: encode(&reply),
-        })
+        let args: WithIdAndSerial<AppendEntriesArgs> = decode(&args.data);
+        match self.outdated_message_discarder.may_discard(args) {
+            Ok(args) => pass_message(&self.raft.remote_task_sender, |sender| {
+                RemoteTask::AppendEntries { args, sender }
+            })
+            .await
+            .map(|reply| AppendEntriesReplyProst {
+                data: encode(&reply),
+            }),
+            Err(e) => Err(e),
+        }
     }
 }
 
