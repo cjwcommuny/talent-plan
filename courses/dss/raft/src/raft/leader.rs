@@ -103,6 +103,7 @@ impl Leader {
                         rpc_replies.extend(futures)
                     }
                     Some(FutureOutput { output: result, context: ReplyContext { follower_id, old_next_index }}) = rpc_replies.next() => {
+                        let _span = trace_span!("append entries receive reply", follower_id, old_next_index).entered();
                         match result {
                             Ok(reply) => {
                                 match on_receive_append_entries_reply(
@@ -113,11 +114,13 @@ impl Leader {
                                     handle.election.current_term()
                                 ) {
                                     Commit{ follower_id, match_length } => {
+                                        trace!("commit");
                                         self.next_index[follower_id] = match_length;
                                         self.match_length[follower_id] = match_length;
                                         try_commit_logs(&self, handle, message_handler).await
                                     }
                                     Retry { follower_id, new_next_index } => {
+                                        trace!("retry");
                                         self.next_index[follower_id] = new_next_index;
                                         let args = build_append_entries_args(me, &handle.election, &handle.logs, new_next_index);
                                         let future = message_handler.peers[follower_id].append_entries(args);
@@ -125,18 +128,19 @@ impl Leader {
                                         rpc_replies.push(with_context(future, context));
                                     }
                                     UpdateTermAndTransitToFollower(new_term) => {
+                                        trace!("update terem and transit to follower");
                                         handle.update_current_term(new_term);
                                         break TransitToFollower;
                                     }
                                 }
                             }
-                            Err(e) => warn!(rpc_error = e.to_string()),
+                            Err(e) => warn!(rpc_error = e.to_string(), "rpc error"),
                         }
                     }
                     Some(task) = message_handler.local_task_receiver.recv() => {
                         match task {
                             LocalTask::AppendEntries { data, sender } => {
-                                trace!("term={}, local task append entries", handle.election.current_term());
+                                // trace!("term={}, local task append entries", handle.election.current_term());
                                 let me = handle.node_id;
                                 let current_term = handle.election.current_term();
                                 let index = handle.add_log(LogKind::Command, data, current_term);

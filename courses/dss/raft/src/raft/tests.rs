@@ -1013,6 +1013,7 @@ fn test_figure_8_unreliable_2c() {
         true,
     );
 
+    info!("end");
     cfg.end();
 }
 

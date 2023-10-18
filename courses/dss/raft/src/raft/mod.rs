@@ -126,7 +126,6 @@ impl Raft {
 
         // see https://github.com/tokio-rs/tracing/discussions/1626
         let dispatch = tracing::dispatcher::Dispatch::default();
-        set_panic_with_log();
 
         let persistent_state = Handle::restore(persister.raft_state());
         let handle_builder = Handle::builder()
@@ -162,6 +161,7 @@ impl Raft {
         let join_handle = std::thread::spawn(move || {
             let dispatch = &dispatch;
             let _guard = tracing::dispatcher::set_default(dispatch);
+            set_panic_with_log();
             let raft_inner = Inner::new(Role::default(), handle, message_handler);
             raft_runtime.block_on(raft_inner.raft_main());
         });
