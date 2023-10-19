@@ -16,7 +16,6 @@ use tracing::{error, info, instrument};
 
 mod candidate;
 mod common;
-#[cfg(test)]
 pub mod config;
 pub mod errors;
 mod follower;
@@ -28,8 +27,6 @@ mod outdated_message;
 pub mod persister;
 mod role;
 mod rpc;
-#[cfg(test)]
-mod tests;
 
 use self::errors::*;
 use self::persister::*;

@@ -14,11 +14,11 @@ use futures::executor::block_on;
 use futures::future;
 use rand::{rngs::ThreadRng, Rng};
 use tracing::dispatcher::DefaultGuard;
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::raft::config::{Config, Entry, Storage, SNAPSHOT_INTERVAL};
-use crate::raft::Node;
+use raft::raft::config::{Config, Entry, Storage, SNAPSHOT_INTERVAL};
+use raft::raft::Node;
 
 /// The tester generously allows solutions to complete elections in one second
 /// (much more than the paper's range of timeouts).
