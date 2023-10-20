@@ -61,10 +61,7 @@ impl Logs {
             .unwrap_or(max_offset);
         let mutation_begin = tail_begin + mutation_offset;
         // must not modify committed logs
-        if self.commit_length > mutation_begin {
-            error!(?self.commit_length, mutation_begin, tail_begin, ?self.logs, ?entries);
-            assert_le!(self.commit_length, mutation_begin);
-        }
+        assert_le!(self.commit_length, mutation_begin);
         self.logs
             .splice(mutation_begin.., entries.drain(mutation_offset..));
     }
