@@ -35,7 +35,7 @@ use crate::raft::common::set_panic_with_log;
 use crate::raft::inner::{Config, Inner, LocalTask};
 use crate::raft::message_handler::MessageHandler;
 use crate::raft::outdated_message::{
-    IdAndSerialManager, OutdatedMessageDiscarder, WithIdAndSerial,
+    IdAndSerialManager, OutdatedMessageDiscarder, WithIdAndSerial, WithIdAndSerialManager,
 };
 use crate::raft::rpc::{AppendEntriesArgs, RequestVoteArgs};
 
@@ -120,8 +120,7 @@ impl Raft {
 
         let raft_runtime = Runtime::new().unwrap();
 
-        // see https://github.com/tokio-rs/tracing/discussions/1626
-        let dispatch = tracing::dispatcher::Dispatch::default();
+        set_panic_with_log();
 
         let persistent_state = Handle::restore(persister.raft_state());
         let handle_builder = Handle::builder()
@@ -144,10 +143,16 @@ impl Raft {
                 .logs(Logs::default())
                 .build()
         };
+        let id_and_serial_manager = Arc::new(IdAndSerialManager::new());
         let message_handler = MessageHandler::new(
             peers
                 .into_iter()
-                .map(|client| Box::new(IdAndSerialManager::new(client)) as _)
+                .map(|client| {
+                    Box::new(WithIdAndSerialManager::new(
+                        id_and_serial_manager.clone(),
+                        client,
+                    )) as _
+                })
                 .collect(),
             remote_task_receiver,
             local_task_receiver,
@@ -155,9 +160,6 @@ impl Raft {
 
         // different node should has different seeds
         let join_handle = std::thread::spawn(move || {
-            let dispatch = &dispatch;
-            let _guard = tracing::dispatcher::set_default(dispatch);
-            set_panic_with_log();
             let raft_inner = Inner::new(Role::default(), handle, message_handler);
             raft_runtime.block_on(raft_inner.raft_main());
         });

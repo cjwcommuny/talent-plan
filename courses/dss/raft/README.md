@@ -7,6 +7,8 @@
 - `append_entries` 和 `request_vote` 是幂等的
 - `term` 只会递增
 - `vote_granted` 是不是只是在部分 `Role` 有用
+- 处于 leader 状态时的 logs 是 append-only 的
+- leader 的 logs 总是包含了所有 committed 的 log
 
 ## TODO
 
