@@ -24,12 +24,6 @@ struct Servers {
     endnames: Vec<Vec<String>>,
 }
 
-fn init_logger() {
-    use std::sync::Once;
-    static LOGGER_INIT: Once = Once::new();
-    LOGGER_INIT.call_once(env_logger::init);
-}
-
 pub struct Config {
     pub net: labrpc::Network,
     pub n: usize,
@@ -52,8 +46,6 @@ pub struct Config {
 
 impl Config {
     pub fn new(n: usize, unreliable: bool, maxraftstate: Option<usize>) -> Config {
-        init_logger();
-
         let servers = Servers {
             kvservers: vec![None; n],
             saved: (0..n).map(|_| Arc::new(SimplePersister::new())).collect(),
@@ -169,7 +161,7 @@ impl Config {
     pub fn connect_all(&self) {
         let servers = self.servers.lock().unwrap();
         for i in 0..self.n {
-            self.connect(i, &self.all(), &*servers);
+            self.connect(i, &self.all(), &servers);
         }
     }
 
@@ -178,12 +170,12 @@ impl Config {
         debug!("partition servers into: {:?} {:?}", p1, p2);
         let servers = self.servers.lock().unwrap();
         for i in p1 {
-            self.disconnect(*i, p2, &*servers);
-            self.connect(*i, p1, &*servers);
+            self.disconnect(*i, p2, &servers);
+            self.connect(*i, p1, &servers);
         }
         for i in p2 {
-            self.disconnect(*i, p1, &*servers);
-            self.connect(*i, p2, &*servers);
+            self.disconnect(*i, p1, &servers);
+            self.connect(*i, p2, &servers);
         }
     }
 
@@ -232,7 +224,7 @@ impl Config {
     /// Shutdown a server by isolating it
     pub fn shutdown_server(&self, i: usize) {
         let mut servers = self.servers.lock().unwrap();
-        self.disconnect(i, &self.all(), &*servers);
+        self.disconnect(i, &self.all(), &servers);
 
         // disable client connections to the server.
         // it's important to do this before creating

@@ -1,5 +1,20 @@
 # The Raft lab
 
+## Notes
+
+- `term` 唯一决定了 `Leader`（可能不存在 leader）.
+- 当不同 node 之间交流信息时，总是更新自己的 `term`.
+- `append_entries` 和 `request_vote` 是幂等的
+- `term` 只会递增
+- `vote_granted` 是不是只是在部分 `Role` 有用
+
+## TODO
+
+- [x] refactor code to make it typesafe, e.g. cannot construct `Role` arbitrarily.
+- [x] attach `node_id` to futures/channels
+- [ ] use type system to guarantee the Leader Append-Only 
+- [x] `LogEntry` doesn't need `index`
+
 This is a series of labs on a key/value storage system built with the Raft
 consensus algorithm. These labs are derived from the [lab2:raft][6824lab2] and
 [lab3:kvraft][6824lab3] from the famous [MIT 6.824][6824] course but rewritten
@@ -102,7 +117,7 @@ peers don't always fire at the same time, or else all peers will vote only for
 themselves and no one will become the leader. You can generate random numbers
 using the `rand` external crate ([doc][rand]).
 - The tester limits the frequency of RPC calls to 10 times per second for each
-pair of sender and receiver. Please do not just send RPCs repeatedly without wait
+pair of _sender and receiver. Please do not just send RPCs repeatedly without wait
 for a timeout.
 - The tester requires your Raft to elect a new leader within five seconds of the
 failure of the old leader (if a majority of peers can still communicate). However,

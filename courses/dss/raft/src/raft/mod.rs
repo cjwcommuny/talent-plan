@@ -1,22 +1,48 @@
-use std::sync::mpsc::{sync_channel, Receiver};
+use crate::raft::role::Role;
+use futures::channel::oneshot::Canceled;
+use futures::TryFutureExt;
+use handle::election::Election;
+use handle::Handle;
+use handle::Logs;
+use inner::RemoteTask;
+use labrpc::Error::{Other, Recv};
+use rand::rngs::StdRng;
+use rand::SeedableRng;
+use std::fmt::Debug;
 use std::sync::Arc;
+use tokio::runtime::Runtime;
+use tokio::sync::{mpsc, oneshot};
+use tracing::{error, info, instrument};
 
-use futures::channel::mpsc::UnboundedSender;
-
-#[cfg(test)]
-pub mod config;
+mod candidate;
+mod common;
 pub mod errors;
+mod follower;
+mod handle;
+mod inner;
+mod leader;
+mod message_handler;
+mod outdated_message;
 pub mod persister;
-#[cfg(test)]
-mod tests;
+mod role;
+mod rpc;
 
 use self::errors::*;
 use self::persister::*;
 use crate::proto::raftpb::*;
+use crate::raft::common::set_panic_with_log;
+
+use crate::raft::inner::{Config, Inner, LocalTask};
+use crate::raft::message_handler::MessageHandler;
+use crate::raft::outdated_message::{
+    IdAndSerialManager, OutdatedMessageDiscarder, WithIdAndSerial,
+};
+use crate::raft::rpc::{AppendEntriesArgs, RequestVoteArgs};
 
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
 /// server, via the `apply_ch` passed to `Raft::new`.
+#[derive(Debug, Clone)]
 pub enum ApplyMsg {
     Command {
         data: Vec<u8>,
@@ -48,21 +74,30 @@ impl State {
     }
 }
 
+pub type NodeId = usize;
+type TermId = u64;
+
 // A single Raft peer.
 pub struct Raft {
-    // RPC end points of all peers
-    peers: Vec<RaftClient>,
-    // Object to hold this peer's persisted state
-    persister: Box<dyn Persister>,
-    // this peer's index into peers[]
-    me: usize,
-    state: Arc<State>,
-    // Your data here (2A, 2B, 2C).
-    // Look at the paper's Figure 2 for a description of what
-    // state a Raft server must maintain.
+    /// for RPC calls
+    remote_task_sender: mpsc::Sender<RemoteTask>,
+    local_task_sender: mpsc::Sender<LocalTask>,
+    thread_handle: Option<std::thread::JoinHandle<()>>,
+    node_id: NodeId,
+}
+
+impl Drop for Raft {
+    #[instrument(skip_all)]
+    fn drop(&mut self) {
+        if let Some(handle) = self.thread_handle.take() {
+            handle.join().map_err(|_| error!("thread panic")).ok();
+        }
+    }
 }
 
 impl Raft {
+    const BUFFER_SIZE: usize = 32; // TODO: put it in the config
+
     /// the service or tester wants to create a Raft server. the ports
     /// of all the Raft servers (including this one) are in peers. this
     /// server's port is peers[me]. all the servers' peers arrays
@@ -73,111 +108,69 @@ impl Raft {
     /// This method must return quickly.
     pub fn new(
         peers: Vec<RaftClient>,
-        me: usize,
+        node_id: NodeId,
         persister: Box<dyn Persister>,
-        apply_ch: UnboundedSender<ApplyMsg>,
+        apply_ch: futures::channel::mpsc::UnboundedSender<ApplyMsg>,
     ) -> Raft {
-        let raft_state = persister.raft_state();
+        info!("start Raft {node_id}");
 
         // Your initialization code here (2A, 2B, 2C).
-        let mut rf = Raft {
-            peers,
-            persister,
-            me,
-            state: Arc::default(),
-        };
+        let (remote_task_sender, remote_task_receiver) = mpsc::channel(Self::BUFFER_SIZE);
+        let (local_task_sender, local_task_receiver) = mpsc::channel(Self::BUFFER_SIZE);
 
-        // initialize from state persisted before a crash
-        rf.restore(&raft_state);
+        let raft_runtime = Runtime::new().unwrap();
 
-        crate::your_code_here((rf, apply_ch))
-    }
+        // see https://github.com/tokio-rs/tracing/discussions/1626
+        let dispatch = tracing::dispatcher::Dispatch::default();
 
-    /// save Raft's persistent state to stable storage,
-    /// where it can later be retrieved after a crash and restart.
-    /// see paper's Figure 2 for a description of what should be persistent.
-    fn persist(&mut self) {
-        // Your code here (2C).
-        // Example:
-        // labcodec::encode(&self.xxx, &mut data).unwrap();
-        // labcodec::encode(&self.yyy, &mut data).unwrap();
-        // self.persister.save_raft_state(data);
-    }
-
-    /// restore previously persisted state.
-    fn restore(&mut self, data: &[u8]) {
-        if data.is_empty() {
-            // bootstrap without any state?
-        }
-        // Your code here (2C).
-        // Example:
-        // match labcodec::decode(data) {
-        //     Ok(o) => {
-        //         self.xxx = o.xxx;
-        //         self.yyy = o.yyy;
-        //     }
-        //     Err(e) => {
-        //         panic!("{:?}", e);
-        //     }
-        // }
-    }
-
-    /// example code to send a RequestVote RPC to a server.
-    /// server is the index of the target server in peers.
-    /// expects RPC arguments in args.
-    ///
-    /// The labrpc package simulates a lossy network, in which servers
-    /// may be unreachable, and in which requests and replies may be lost.
-    /// This method sends a request and waits for a reply. If a reply arrives
-    /// within a timeout interval, This method returns Ok(_); otherwise
-    /// this method returns Err(_). Thus this method may not return for a while.
-    /// An Err(_) return can be caused by a dead server, a live server that
-    /// can't be reached, a lost request, or a lost reply.
-    ///
-    /// This method is guaranteed to return (perhaps after a delay) *except* if
-    /// the handler function on the server side does not return.  Thus there
-    /// is no need to implement your own timeouts around this method.
-    ///
-    /// look at the comments in ../labrpc/src/lib.rs for more details.
-    fn send_request_vote(
-        &self,
-        server: usize,
-        args: RequestVoteArgs,
-    ) -> Receiver<Result<RequestVoteReply>> {
-        // Your code here if you want the rpc becomes async.
-        // Example:
-        // ```
-        // let peer = &self.peers[server];
-        // let peer_clone = peer.clone();
-        // let (tx, rx) = channel();
-        // peer.spawn(async move {
-        //     let res = peer_clone.request_vote(&args).await.map_err(Error::Rpc);
-        //     tx.send(res);
-        // });
-        // rx
-        // ```
-        let (tx, rx) = sync_channel::<Result<RequestVoteReply>>(1);
-        crate::your_code_here((server, args, tx, rx))
-    }
-
-    fn start<M>(&self, command: &M) -> Result<(u64, u64)>
-    where
-        M: labcodec::Message,
-    {
-        let index = 0;
-        let term = 0;
-        let is_leader = true;
-        let mut buf = vec![];
-        labcodec::encode(command, &mut buf).map_err(Error::Encode)?;
-        // Your code here (2B).
-
-        if is_leader {
-            Ok((index, term))
+        let persistent_state = Handle::restore(persister.raft_state());
+        let handle_builder = Handle::builder()
+            .node_id(node_id)
+            .persister(persister)
+            .apply_ch(apply_ch)
+            .random_generator(Box::new(StdRng::from_entropy()))
+            .config(Config::default());
+        let handle = if let Some(persistent_state) = persistent_state {
+            handle_builder
+                .election(Election::new(
+                    persistent_state.term,
+                    persistent_state.voted_for.map(|id| id as NodeId),
+                ))
+                .logs(Logs::with_logs(persistent_state.log.into_iter().collect()))
+                .build()
         } else {
-            Err(Error::NotLeader)
+            handle_builder
+                .election(Election::default())
+                .logs(Logs::default())
+                .build()
+        };
+        let message_handler = MessageHandler::new(
+            peers
+                .into_iter()
+                .map(|client| Box::new(IdAndSerialManager::new(client)) as _)
+                .collect(),
+            remote_task_receiver,
+            local_task_receiver,
+        );
+
+        // different node should has different seeds
+        let join_handle = std::thread::spawn(move || {
+            let dispatch = &dispatch;
+            let _guard = tracing::dispatcher::set_default(dispatch);
+            set_panic_with_log();
+            let raft_inner = Inner::new(Role::default(), handle, message_handler);
+            raft_runtime.block_on(raft_inner.raft_main());
+        });
+
+        Raft {
+            remote_task_sender,
+            local_task_sender,
+            thread_handle: Some(join_handle),
+            node_id,
         }
     }
 
+    #[allow(dead_code)]
     fn cond_install_snapshot(
         &mut self,
         last_included_term: u64,
@@ -188,25 +181,10 @@ impl Raft {
         crate::your_code_here((last_included_term, last_included_index, snapshot));
     }
 
+    #[allow(dead_code)]
     fn snapshot(&mut self, index: u64, snapshot: &[u8]) {
         // Your code here (2D).
         crate::your_code_here((index, snapshot));
-    }
-}
-
-impl Raft {
-    /// Only for suppressing deadcode warnings.
-    #[doc(hidden)]
-    pub fn __suppress_deadcode(&mut self) {
-        let _ = self.start(&0);
-        let _ = self.cond_install_snapshot(0, 0, &[]);
-        self.snapshot(0, &[]);
-        let _ = self.send_request_vote(0, Default::default());
-        self.persist();
-        let _ = &self.state;
-        let _ = &self.me;
-        let _ = &self.persister;
-        let _ = &self.peers;
     }
 }
 
@@ -227,13 +205,18 @@ impl Raft {
 #[derive(Clone)]
 pub struct Node {
     // Your code here.
+    raft: Arc<Raft>,
+    outdated_message_discarder: Arc<OutdatedMessageDiscarder>,
 }
 
 impl Node {
     /// Create a new raft service.
     pub fn new(raft: Raft) -> Node {
         // Your code here.
-        crate::your_code_here(raft)
+        Node {
+            raft: Arc::new(raft),
+            outdated_message_discarder: Arc::new(OutdatedMessageDiscarder::new()),
+        }
     }
 
     /// the service using Raft (e.g. a k/v server) wants to start
@@ -252,26 +235,30 @@ impl Node {
     where
         M: labcodec::Message,
     {
-        // Your code here.
-        // Example:
-        // self.raft.start(command)
-        crate::your_code_here(command)
+        let mut buffer = Vec::new();
+        command.encode(&mut buffer).map_err(Error::Encode)?;
+        blocking_pass_message(&self.raft.local_task_sender, |sender| {
+            LocalTask::AppendEntries {
+                data: buffer,
+                sender,
+            }
+        })
+        // The test code uses indices starting from 1, while the implementation uses indices starting from 0.
+        .map(|option_tuple| option_tuple.map(|(index, term)| (index + 1, term)))
+        .map_err(Error::Rpc)
+        .and_then(|result| result.ok_or(Error::NotLeader))
     }
 
     /// The current term of this peer.
     pub fn term(&self) -> u64 {
-        // Your code here.
-        // Example:
-        // self.raft.term
-        crate::your_code_here(())
+        blocking_pass_message(&self.raft.local_task_sender, LocalTask::GetTerm)
+            .unwrap_or_else(|_| panic!("get term failed in node {}", self.raft.node_id))
     }
 
     /// Whether this peer believes it is the leader.
     pub fn is_leader(&self) -> bool {
-        // Your code here.
-        // Example:
-        // self.raft.leader_id == self.id
-        crate::your_code_here(())
+        blocking_pass_message(&self.raft.local_task_sender, LocalTask::CheckLeader)
+            .unwrap_or_else(|_| panic!("check is leader failed in node {}", self.raft.node_id))
     }
 
     /// The current state of this peer.
@@ -290,8 +277,12 @@ impl Node {
     /// A.K.A all resources are reset. But we are simulating
     /// a VIRTUAL crash in tester, so take care of background
     /// threads you generated with this Raft Node.
+    #[instrument(skip_all)]
     pub fn kill(&self) {
         // Your code here, if desired.
+        blocking_pass_message(&self.raft.local_task_sender, LocalTask::Shutdown)
+            .map_err(|e| error!("in node {}: {}", self.raft.node_id, e.to_string()))
+            .ok();
     }
 
     /// A service wants to switch to snapshot.  
@@ -314,6 +305,7 @@ impl Node {
     /// including index. This means the service no longer needs the log through
     /// (and including) that index. Raft should now trim its log as much as
     /// possible.
+    #[allow(dead_code)]
     pub fn snapshot(&self, index: u64, snapshot: &[u8]) {
         // Your code here.
         // Example:
@@ -327,8 +319,70 @@ impl RaftService for Node {
     // example RequestVote RPC handler.
     //
     // CAVEATS: Please avoid locking or sleeping here, it may jam the network.
-    async fn request_vote(&self, args: RequestVoteArgs) -> labrpc::Result<RequestVoteReply> {
-        // Your code here (2A, 2B).
-        crate::your_code_here(args)
+    async fn request_vote(
+        &self,
+        args: RequestVoteArgsProst,
+    ) -> labrpc::Result<RequestVoteReplyProst> {
+        let args: WithIdAndSerial<RequestVoteArgs> = decode(&args.data);
+        match self.outdated_message_discarder.may_discard(args) {
+            Ok(args) => pass_message(&self.raft.remote_task_sender, |sender| {
+                RemoteTask::RequestVote { args, sender }
+            })
+            .await
+            .map(|reply| RequestVoteReplyProst {
+                data: encode(&reply),
+            }),
+            Err(e) => Err(e),
+        }
     }
+
+    async fn append_entries(
+        &self,
+        args: AppendEntriesArgsProst,
+    ) -> labrpc::Result<AppendEntriesReplyProst> {
+        let args: WithIdAndSerial<AppendEntriesArgs> = decode(&args.data);
+        match self.outdated_message_discarder.may_discard(args) {
+            Ok(args) => pass_message(&self.raft.remote_task_sender, |sender| {
+                RemoteTask::AppendEntries { args, sender }
+            })
+            .await
+            .map(|reply| AppendEntriesReplyProst {
+                data: encode(&reply),
+            }),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// if we have algebraic effects we can unify
+///`blocking_pass_message` and `pass_message`
+fn blocking_pass_message<F, R, M>(
+    message_sender: &mpsc::Sender<M>,
+    message_constructor: F,
+) -> labrpc::Result<R>
+where
+    F: FnOnce(oneshot::Sender<R>) -> M,
+    R: Send,
+{
+    let (sender, receiver) = oneshot::channel();
+    message_sender
+        .blocking_send(message_constructor(sender))
+        .map_err(|_| Other(String::from("sender error")))?;
+    receiver.blocking_recv().map_err(|_| Recv(Canceled))
+}
+
+async fn pass_message<F, R, M>(
+    message_sender: &mpsc::Sender<M>,
+    message_constructor: F,
+) -> labrpc::Result<R>
+where
+    F: FnOnce(oneshot::Sender<R>) -> M,
+    R: Send,
+{
+    let (sender, receiver) = oneshot::channel();
+    message_sender
+        .send(message_constructor(sender))
+        .map_err(|_| Other(String::from("sender error")))
+        .await?;
+    receiver.await.map_err(|_| Recv(Canceled))
 }

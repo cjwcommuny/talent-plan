@@ -16,13 +16,13 @@ service! {
 use bench::{add_service, Client as BenchClient, Service};
 
 // Hand-written protobuf messages.
-#[derive(Clone, PartialEq, Message)]
+#[derive(Clone, PartialEq, Eq, Message)]
 pub struct BenchArgs {
     #[prost(int64, tag = "1")]
     pub x: i64,
 }
 
-#[derive(Clone, PartialEq, Message)]
+#[derive(Clone, PartialEq, Eq, Message)]
 pub struct BenchReply {
     #[prost(string, tag = "1")]
     pub x: String,

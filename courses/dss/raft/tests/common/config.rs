@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -9,11 +9,22 @@ use futures::future;
 use futures::stream::StreamExt;
 use rand::Rng;
 
-use crate::proto::raftpb::*;
-use crate::raft;
-use crate::raft::persister::*;
+use prost_derive::Message;
+use raft::proto::raftpb::{add_raft_service, RaftClient};
+use raft::raft::persister::{Persister, SimplePersister};
+use raft::raft::Raft;
+use raft::raft::{ApplyMsg, Node};
+use tracing::{debug, info};
 
 pub const SNAPSHOT_INTERVAL: u64 = 10;
+
+static INIT: Once = Once::new();
+
+pub fn initialize() {
+    INIT.call_once(|| {
+        // initialization code here
+    });
+}
 
 fn uniqstring() -> String {
     static ID: AtomicUsize = AtomicUsize::new(0);
@@ -21,7 +32,7 @@ fn uniqstring() -> String {
 }
 
 /// A log entry.
-#[derive(Clone, PartialEq, Message)]
+#[derive(Clone, PartialEq, Eq, Message)]
 pub struct Entry {
     #[prost(uint64, tag = "100")]
     pub x: u64,
@@ -56,17 +67,11 @@ impl Storage {
     }
 }
 
-fn init_logger() {
-    use std::sync::Once;
-    static LOGGER_INIT: Once = Once::new();
-    LOGGER_INIT.call_once(env_logger::init);
-}
-
 pub struct Config {
     pub net: labrpc::Network,
     n: usize,
     // use boxed slice to prohibit grow capacity.
-    pub rafts: Arc<Mutex<Box<[Option<raft::Node>]>>>,
+    pub rafts: Arc<Mutex<Box<[Option<Node>]>>>,
     // whether each server is on the net
     pub connected: Box<[bool]>,
     saved: Box<[Arc<SimplePersister>]>,
@@ -94,8 +99,6 @@ impl Config {
     }
 
     pub fn new_with(n: usize, unreliable: bool, snapshot: bool) -> Config {
-        init_logger();
-
         let net = labrpc::Network::new();
         net.set_reliable(!unreliable);
         net.set_long_delays(true);
@@ -293,6 +296,7 @@ impl Config {
                     if let Some(ref rf) = &rafts[starts] {
                         match rf.start(&cmd) {
                             Ok((index1, _)) => {
+                                info!("start cmd {:?} success in node_id: {:?}", cmd, starts);
                                 index = Some(index1);
                                 break;
                             }
@@ -396,15 +400,15 @@ impl Config {
         }
 
         let (tx, apply_ch) = unbounded();
-        let rf = raft::Raft::new(clients, i, Box::new(self.saved[i].clone()), tx);
-        let node = raft::Node::new(rf);
+        let rf = Raft::new(clients, i, Box::new(self.saved[i].clone()), tx);
+        let node = Node::new(rf);
         self.rafts.lock().unwrap()[i] = Some(node.clone());
 
         // listen to messages from Raft indicating newly committed messages.
         let storage = self.storage.clone();
         let rafts = self.rafts.clone();
-        let apply = apply_ch.for_each(move |cmd: raft::ApplyMsg| match cmd {
-            raft::ApplyMsg::Command { data, index } => {
+        let apply = apply_ch.for_each(move |cmd: ApplyMsg| match cmd {
+            ApplyMsg::Command { data, index } => {
                 // debug!("apply {}", index);
                 let entry = labcodec::decode(&data).expect("committed command is not an entry");
                 let mut s = storage.lock().unwrap();
@@ -435,7 +439,7 @@ impl Config {
                 }
                 future::ready(())
             }
-            raft::ApplyMsg::Snapshot { data, index, term } if snapshot => {
+            ApplyMsg::Snapshot { data, index, term } if snapshot => {
                 // debug!("install snapshot {}", index);
                 if rafts.lock().unwrap()[i]
                     .as_ref()
@@ -456,7 +460,7 @@ impl Config {
         self.net.spawn_poller(apply);
 
         let mut builder = labrpc::ServerBuilder::new(format!("{}", i));
-        raft::add_raft_service(node, &mut builder).unwrap();
+        add_raft_service(node, &mut builder).unwrap();
         let srv = builder.build();
         self.net.add_server(srv);
     }
