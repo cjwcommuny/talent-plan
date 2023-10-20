@@ -6,7 +6,7 @@ use std::panic;
 use tracing::error;
 
 pub fn last_index_and_element<T>(slice: &[T]) -> Option<(usize, &T)> {
-    slice.iter().enumerate().rev().next()
+    slice.iter().enumerate().next_back()
 }
 
 /// When panic occurs, log it

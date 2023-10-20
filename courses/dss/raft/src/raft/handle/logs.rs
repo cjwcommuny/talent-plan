@@ -188,7 +188,7 @@ mod test_log {
             log.logs,
             original_entries
                 .into_iter()
-                .chain(new_entries.into_iter())
+                .chain(new_entries)
                 .collect::<Vec<_>>()
         );
 
