@@ -7,7 +7,7 @@ use more_asserts::assert_le;
 use std::cmp::min;
 use std::fmt::{Debug, Formatter};
 use std::iter::empty;
-use tracing::{error, instrument};
+use tracing::instrument;
 
 /// `commit_length` split the logs to the two sections:
 ///
