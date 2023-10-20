@@ -1,9 +1,9 @@
+use crate::common::config::Config;
 use crate::common::init_logger;
 use function_name::named;
-use raft::raft::config::Config;
 use rand::Rng;
 
-mod common;
+pub mod common;
 
 #[test]
 #[named]

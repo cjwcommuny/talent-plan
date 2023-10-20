@@ -1,8 +1,8 @@
+use crate::common::config::{Config, Entry};
 use crate::common::init_logger;
 use function_name::named;
-use raft::raft::config::{Config, Entry};
 
-mod common;
+pub mod common;
 
 #[test]
 #[named]

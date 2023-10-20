@@ -16,7 +16,6 @@ use tracing::{error, info, instrument};
 
 mod candidate;
 mod common;
-pub mod config;
 pub mod errors;
 mod follower;
 mod handle;

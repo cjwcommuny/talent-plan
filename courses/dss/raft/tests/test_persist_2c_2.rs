@@ -1,9 +1,9 @@
+use crate::common::config::{Config, Entry};
 use crate::common::{init_logger, RAFT_ELECTION_TIMEOUT};
 use function_name::named;
-use raft::raft::config::{Config, Entry};
 use std::thread;
 
-mod common;
+pub mod common;
 
 #[test]
 #[named]

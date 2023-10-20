@@ -1,12 +1,12 @@
+use crate::common::config::Config;
 use crate::common::{init_logger, random_entry, RAFT_ELECTION_TIMEOUT};
 use function_name::named;
-use raft::raft::config::Config;
 use rand::Rng;
 use std::thread;
 use std::time::Duration;
 use tracing::info;
 
-mod common;
+pub mod common;
 
 // Test the scenarios described in Figure 8 of the extended Raft paper. Each
 // iteration asks a leader, if there is one, to insert a command in the Raft

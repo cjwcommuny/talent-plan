@@ -1,4 +1,4 @@
-use raft::raft::config::{Config, Entry, Storage, SNAPSHOT_INTERVAL};
+use config::{Config, Entry, Storage, SNAPSHOT_INTERVAL};
 use raft::raft::Node;
 use rand::prelude::ThreadRng;
 use rand::Rng;
@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
+
+pub mod config;
 
 pub fn init_logger(test_name: &str) {
     let file = File::create(Path::new("../logs").join(format!("{}.log", test_name))).unwrap();
@@ -27,6 +29,7 @@ pub fn init_logger(test_name: &str) {
 
 pub const RAFT_ELECTION_TIMEOUT: Duration = Duration::from_millis(1000);
 
+#[cfg(test)]
 pub fn random_entry(rnd: &mut ThreadRng) -> Entry {
     Entry {
         x: rnd.gen::<u64>(),

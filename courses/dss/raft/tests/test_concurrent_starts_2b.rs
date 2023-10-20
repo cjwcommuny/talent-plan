@@ -1,14 +1,14 @@
+use crate::common::config::{Config, Entry};
 use crate::common::init_logger;
 use function_name::named;
 use futures::channel::oneshot;
 use futures::executor::block_on;
 use futures::future;
-use raft::raft::config::{Config, Entry};
 use std::thread;
 use std::time::Duration;
 use tracing::warn;
 
-mod common;
+pub mod common;
 
 #[test]
 #[named]

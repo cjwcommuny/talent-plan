@@ -1,7 +1,7 @@
 use crate::common::{init_logger, snap_common};
 use function_name::named;
 
-mod common;
+pub mod common;
 
 #[test]
 #[named]

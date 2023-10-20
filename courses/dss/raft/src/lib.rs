@@ -10,7 +10,7 @@ extern crate log;
 extern crate prost_derive;
 
 pub mod kvraft;
-mod proto;
+pub mod proto;
 pub mod raft;
 
 /// A place holder for suppressing `unused_variables` warning.

@@ -1,15 +1,16 @@
+use crate::common::config::Config;
 use crate::common::{init_logger, RAFT_ELECTION_TIMEOUT};
 use function_name::named;
-use raft::raft::config::Config;
 use std::thread;
 use std::time::Duration;
 use tracing::warn;
 
-mod common;
+pub mod common;
 
 #[test]
 #[named]
 fn test_initial_election_2a() {
+    println!("dir: {:?}", std::env::current_dir());
     init_logger(function_name!());
     let servers = 3;
     let mut cfg = Config::new(servers);
