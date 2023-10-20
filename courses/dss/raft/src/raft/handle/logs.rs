@@ -61,7 +61,16 @@ impl Logs {
             .unwrap_or(max_offset);
         let mutation_begin = tail_begin + mutation_offset;
         // must not modify committed logs
-        assert_le!(self.commit_length, mutation_begin);
+        assert_le!(
+            self.commit_length,
+            mutation_begin,
+            "self.commit_length={}, mutation_begin={}, tail_begin={}, self.logs={:?}, self.entries={:?}",
+            self.commit_length,
+            mutation_begin,
+            tail_begin,
+            self.logs,
+            entries,
+        );
         self.logs
             .splice(mutation_begin.., entries.drain(mutation_offset..));
     }
