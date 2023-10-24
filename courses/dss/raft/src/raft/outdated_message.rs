@@ -1,51 +1,44 @@
-use dashmap::DashMap;
 use derive_new::new;
 use serde::{Deserialize, Serialize};
-use std::cmp::max;
+
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tracing::{instrument, trace};
+use tokio::sync::mpsc;
+use tracing::trace;
 use uuid::Uuid;
 
-pub struct OutdatedMessageDiscarder {
-    recent_ids: DashMap<String, u64>,
+pub struct OutdatedMessageDiscarder<T> {
+    recent_ids: HashMap<String, u64>,
+    receiver: mpsc::Receiver<WithIdAndSerial<T>>,
 }
 
-// leader 可能连续发送两个 append entries，但是后一个 append entries 先到，导致乱序
-// FIXME: 在这种情况下是不是乱序不会改变结果？
-impl OutdatedMessageDiscarder {
-    pub fn new() -> Self {
+impl<T> OutdatedMessageDiscarder<T> {
+    pub fn new(receiver: mpsc::Receiver<WithIdAndSerial<T>>) -> Self {
         Self {
-            recent_ids: DashMap::new(),
+            recent_ids: HashMap::new(),
+            receiver,
         }
     }
 
-    #[instrument(skip_all, level = "trace")]
-    pub fn may_discard<T: Debug>(&self, message: WithIdAndSerial<T>) -> labrpc::Result<T> {
-        let WithIdAndSerial {
-            id,
-            serial: message_serial,
-            data,
-        } = message;
-        let output = if let Some(serial) = self.recent_ids.get(&id) {
-            let serial = *serial;
-            if message_serial > serial {
-                trace!(serial, message_serial, ?data, "receive fresh message");
-                Ok(data)
-            } else {
-                trace!(serial, message_serial, ?data, "receive stale message");
-                Err(labrpc::Error::Outdated {
-                    local_serial: serial,
-                    remote_serial: message_serial,
-                })
+    pub async fn recv(&mut self) -> Option<T> {
+        while let Some(WithIdAndSerial { id, serial, data }) = self.receiver.recv().await {
+            match self.recent_ids.entry(id) {
+                Entry::Occupied(mut recent_serial) => {
+                    if *recent_serial.get() < serial {
+                        recent_serial.insert(serial);
+                        return Some(data);
+                    }
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(serial);
+                    return Some(data);
+                }
             }
-        } else {
-            Ok(data)
-        };
-        self.recent_ids
-            .alter(&id, |_key, serial| max(serial, message_serial));
-        output
+        }
+        None
     }
 }
 

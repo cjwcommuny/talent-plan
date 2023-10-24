@@ -47,7 +47,7 @@ pub mod raftpb {
 }
 
 pub mod kvraftpb {
-    //// Put or Append
+    /// Put or Append
     #[derive(Clone, PartialEq, Eq, ::prost::Message)]
     pub struct PutAppendRequest {
         #[prost(string, tag = "1")]

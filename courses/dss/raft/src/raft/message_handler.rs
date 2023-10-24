@@ -1,4 +1,5 @@
 use crate::raft::inner::{LocalTask, PeerEndPoint, RemoteTask};
+use crate::raft::outdated_message::OutdatedMessageDiscarder;
 use crate::raft::NodeId;
 use derive_new::new;
 use num::integer::div_ceil;
@@ -8,7 +9,7 @@ use tokio::sync::mpsc;
 #[derive(new)]
 pub struct MessageHandler {
     pub peers: Vec<Box<dyn PeerEndPoint + Send>>, // RPC end points of all peers
-    pub remote_task_receiver: mpsc::Receiver<RemoteTask>,
+    pub remote_task_receiver: OutdatedMessageDiscarder<RemoteTask>,
     pub local_task_receiver: mpsc::Receiver<LocalTask>,
 }
 

@@ -80,7 +80,7 @@ type TermId = u64;
 // A single Raft peer.
 pub struct Raft {
     /// for RPC calls
-    remote_task_sender: mpsc::Sender<RemoteTask>,
+    remote_task_sender: mpsc::Sender<WithIdAndSerial<RemoteTask>>,
     local_task_sender: mpsc::Sender<LocalTask>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
     node_id: NodeId,
@@ -154,7 +154,7 @@ impl Raft {
                     )) as _
                 })
                 .collect(),
-            remote_task_receiver,
+            OutdatedMessageDiscarder::new(remote_task_receiver),
             local_task_receiver,
         );
 
@@ -208,7 +208,6 @@ impl Raft {
 pub struct Node {
     // Your code here.
     raft: Arc<Raft>,
-    outdated_message_discarder: Arc<OutdatedMessageDiscarder>,
 }
 
 impl Node {
@@ -217,7 +216,6 @@ impl Node {
         // Your code here.
         Node {
             raft: Arc::new(raft),
-            outdated_message_discarder: Arc::new(OutdatedMessageDiscarder::new()),
         }
     }
 
@@ -325,34 +323,30 @@ impl RaftService for Node {
         &self,
         args: RequestVoteArgsProst,
     ) -> labrpc::Result<RequestVoteReplyProst> {
-        let args: WithIdAndSerial<RequestVoteArgs> = decode(&args.data);
-        match self.outdated_message_discarder.may_discard(args) {
-            Ok(args) => pass_message(&self.raft.remote_task_sender, |sender| {
-                RemoteTask::RequestVote { args, sender }
-            })
-            .await
-            .map(|reply| RequestVoteReplyProst {
-                data: encode(&reply),
-            }),
-            Err(e) => Err(e),
-        }
+        let WithIdAndSerial::<RequestVoteArgs> { id, serial, data } = decode(&args.data);
+
+        pass_message(&self.raft.remote_task_sender, |sender| {
+            WithIdAndSerial::new(id, serial, RemoteTask::RequestVote { args: data, sender })
+        })
+        .await
+        .map(|reply| RequestVoteReplyProst {
+            data: encode(&reply),
+        })
     }
 
     async fn append_entries(
         &self,
         args: AppendEntriesArgsProst,
     ) -> labrpc::Result<AppendEntriesReplyProst> {
-        let args: WithIdAndSerial<AppendEntriesArgs> = decode(&args.data);
-        match self.outdated_message_discarder.may_discard(args) {
-            Ok(args) => pass_message(&self.raft.remote_task_sender, |sender| {
-                RemoteTask::AppendEntries { args, sender }
-            })
-            .await
-            .map(|reply| AppendEntriesReplyProst {
-                data: encode(&reply),
-            }),
-            Err(e) => Err(e),
-        }
+        let WithIdAndSerial::<AppendEntriesArgs> { id, serial, data } = decode(&args.data);
+
+        pass_message(&self.raft.remote_task_sender, |sender| {
+            WithIdAndSerial::new(id, serial, RemoteTask::AppendEntries { args: data, sender })
+        })
+        .await
+        .map(|reply| AppendEntriesReplyProst {
+            data: encode(&reply),
+        })
     }
 }
 
