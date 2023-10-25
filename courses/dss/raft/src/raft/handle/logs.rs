@@ -7,7 +7,7 @@ use more_asserts::assert_le;
 use std::cmp::min;
 use std::fmt::{Debug, Formatter};
 use std::iter::empty;
-use tracing::{error, instrument};
+use tracing::instrument;
 
 /// `commit_length` split the logs to the two sections:
 ///
@@ -49,22 +49,24 @@ impl Logs {
         tail_begin: usize,
         mut entries: Vec<LogEntry>,
     ) {
-        assert!(
-            tail_begin <= self.logs.len(),
-            "{}, {}",
-            tail_begin,
-            self.logs.len()
-        );
+        assert_le!(tail_begin, self.logs.len());
+
         let max_offset = min(entries.len(), self.logs.len() - tail_begin);
         let mutation_offset = (0..max_offset)
             .find(|offset| entries[*offset].term != self.logs[tail_begin + *offset].term)
             .unwrap_or(max_offset);
         let mutation_begin = tail_begin + mutation_offset;
         // must not modify committed logs
-        if self.commit_length > mutation_begin {
-            error!(?self.commit_length, mutation_begin, tail_begin, ?self.logs, ?entries);
-            assert_le!(self.commit_length, mutation_begin);
-        }
+        assert_le!(
+            self.commit_length,
+            mutation_begin,
+            "self.commit_length={}, mutation_begin={}, tail_begin={}, self.logs={:?}, self.entries={:?}",
+            self.commit_length,
+            mutation_begin,
+            tail_begin,
+            self.logs,
+            entries,
+        );
         self.logs
             .splice(mutation_begin.., entries.drain(mutation_offset..));
     }
@@ -125,12 +127,8 @@ impl Logs {
         &'a mut self,
         new_commit_length: usize,
     ) -> impl Iterator<Item = (usize, LogEntry)> + 'a {
-        assert!(
-            new_commit_length <= self.logs.len(),
-            "{}, {}",
-            new_commit_length,
-            self.logs.len()
-        );
+        assert_le!(new_commit_length, self.logs.len());
+
         // `self.commit_length` can be incremented only
         if self.commit_length < new_commit_length {
             let newly_committed = self
@@ -138,7 +136,7 @@ impl Logs {
                 .iter()
                 .enumerate()
                 .skip(self.commit_length)
-                .take(new_commit_length)
+                .take(new_commit_length - self.commit_length)
                 .map(|(index, entry)| (index, entry.clone()));
             self.commit_length = new_commit_length;
             Either::Left(newly_committed)
@@ -147,7 +145,7 @@ impl Logs {
             // this situation occurs when leader has smaller `commit_length` than follower
             // if `node1` is leader at first and `node1.commit_length > node2.commit_length`
             // and `node1.log.len() == node2.log.len()`, then `node1` no longer be leader
-            // due to some reasons, and node2 becoms leader
+            // due to some reasons, and node2 becomes leader
             Either::Right(empty())
         }
     }

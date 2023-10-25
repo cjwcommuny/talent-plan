@@ -90,8 +90,7 @@ pub async fn append_entries(
     args: AppendEntriesArgs,
     handle: &mut Handle,
 ) -> (AppendEntriesReply, TransitToFollower) {
-    trace!(?args);
-    trace!(?handle);
+    trace!(?args, ?handle);
     if args.term < handle.election.current_term() {
         trace!("term_ok = false");
         handle.election.voted_for = None;
@@ -145,7 +144,7 @@ pub async fn append_entries(
         // side effect
         async_side_effect(async {
             if let Some(new_log_begin) = new_log_begin {
-                trace!("commit logs from {new_log_begin}");
+                trace!("try to commit logs from {new_log_begin}");
                 handle.update_log_tail(new_log_begin, args.entries);
                 let logs = handle.logs.commit_logs(args.leader_commit_length);
                 Handle::apply_messages(&mut handle.apply_ch, logs).await;

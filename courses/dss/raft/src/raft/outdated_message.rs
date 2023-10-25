@@ -1,66 +1,80 @@
-use dashmap::DashMap;
 use derive_new::new;
 use serde::{Deserialize, Serialize};
-use std::cmp::max;
+
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+use std::fmt::Debug;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tracing::trace;
 use uuid::Uuid;
 
-pub struct OutdatedMessageDiscarder {
-    recent_ids: DashMap<String, u64>,
+pub struct OutdatedMessageDiscarder<T> {
+    recent_ids: HashMap<String, u64>,
+    receiver: mpsc::Receiver<WithIdAndSerial<T>>,
 }
 
-impl OutdatedMessageDiscarder {
-    pub fn new() -> Self {
+impl<T> OutdatedMessageDiscarder<T> {
+    pub fn new(receiver: mpsc::Receiver<WithIdAndSerial<T>>) -> Self {
         Self {
-            recent_ids: DashMap::new(),
+            recent_ids: HashMap::new(),
+            receiver,
         }
     }
 
-    pub fn may_discard<T>(&self, message: WithIdAndSerial<T>) -> labrpc::Result<T> {
-        let WithIdAndSerial {
-            id,
-            serial: message_serial,
-            data,
-        } = message;
-        let output = if let Some(serial) = self.recent_ids.get(&id) {
-            if message_serial > *serial {
-                Ok(data)
-            } else {
-                Err(labrpc::Error::Outdated {
-                    local_serial: *serial,
-                    remote_serial: message_serial,
-                })
+    pub async fn recv(&mut self) -> Option<T> {
+        while let Some(WithIdAndSerial { id, serial, data }) = self.receiver.recv().await {
+            match self.recent_ids.entry(id) {
+                Entry::Occupied(mut recent_serial) => {
+                    if *recent_serial.get() < serial {
+                        recent_serial.insert(serial);
+                        return Some(data);
+                    }
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(serial);
+                    return Some(data);
+                }
             }
-        } else {
-            Ok(data)
-        };
-        self.recent_ids
-            .alter(&id, |_key, serial| max(serial, message_serial));
-        output
+        }
+        None
     }
 }
 
-pub struct IdAndSerialManager<T> {
-    id: String,
-    serial: AtomicU64,
+#[derive(new)]
+pub struct WithIdAndSerialManager<T> {
+    manager: Arc<IdAndSerialManager>,
     inner: T,
 }
 
-impl<T> IdAndSerialManager<T> {
-    pub fn new(inner: T) -> Self {
-        Self {
-            id: Uuid::new_v4().to_string(),
-            serial: AtomicU64::new(1),
-            inner,
-        }
-    }
-
+impl<T> WithIdAndSerialManager<T> {
     pub fn inner(&self) -> &T {
         &self.inner
     }
 
-    pub fn new_args<U>(&self, arg: U) -> WithIdAndSerial<U> {
+    pub fn new_args<U: Debug>(&self, arg: U) -> WithIdAndSerial<U> {
+        self.manager.new_args(arg)
+    }
+}
+
+pub struct IdAndSerialManager {
+    id: String,
+    serial: AtomicU64,
+}
+
+impl IdAndSerialManager {
+    pub fn new() -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            serial: AtomicU64::new(1),
+        }
+    }
+
+    pub fn new_args<U: Debug>(&self, arg: U) -> WithIdAndSerial<U> {
         let serial = self.serial.fetch_add(1, Ordering::SeqCst);
+        let id = self.id.clone();
+        trace!(serial, id, ?arg, "send message");
         WithIdAndSerial::new(self.id.clone(), serial, arg)
     }
 }

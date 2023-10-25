@@ -13,7 +13,7 @@ use std::fmt::{Debug, Formatter};
 use std::ops::Range;
 
 use crate::raft::message_handler::MessageHandler;
-use crate::raft::outdated_message::IdAndSerialManager;
+use crate::raft::outdated_message::WithIdAndSerialManager;
 use tokio::sync::oneshot;
 
 pub struct Config {
@@ -133,7 +133,7 @@ where
 }
 
 #[async_trait]
-impl PeerEndPoint for IdAndSerialManager<RaftClient> {
+impl PeerEndPoint for WithIdAndSerialManager<RaftClient> {
     async fn request_vote(&self, args: RequestVoteArgs) -> raft::Result<RequestVoteReply> {
         let args = self.new_args(args);
         let args = RequestVoteArgsProst {
