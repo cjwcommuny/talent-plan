@@ -51,9 +51,9 @@ pub mod kvraftpb {
     #[derive(Clone, PartialEq, Eq, ::prost::Message)]
     pub struct PutAppendRequest {
         #[prost(string, tag = "1")]
-        pub key: std::string::String,
+        pub key: String,
         #[prost(string, tag = "2")]
-        pub value: std::string::String,
+        pub value: String,
         /// "Put" or "Append"
         ///
         /// You'll have to add definitions here.
@@ -66,22 +66,22 @@ pub mod kvraftpb {
         #[prost(bool, tag = "1")]
         pub wrong_leader: bool,
         #[prost(string, tag = "2")]
-        pub err: std::string::String,
+        pub err: String,
     }
     #[derive(Clone, PartialEq, Eq, ::prost::Message)]
     pub struct GetRequest {
         /// You'll have to add definitions here.
         #[prost(string, tag = "1")]
-        pub key: std::string::String,
+        pub key: String,
     }
     #[derive(Clone, PartialEq, Eq, ::prost::Message)]
     pub struct GetReply {
         #[prost(bool, tag = "1")]
         pub wrong_leader: bool,
         #[prost(string, tag = "2")]
-        pub err: std::string::String,
+        pub err: String,
         #[prost(string, tag = "3")]
-        pub value: std::string::String,
+        pub value: String,
     }
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
     #[repr(i32)]
