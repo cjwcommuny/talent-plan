@@ -12,10 +12,6 @@ pub enum Error {
     Recv(Canceled),
     Timeout,
     Stopped,
-    Outdated {
-        local_serial: u64,
-        remote_serial: u64,
-    },
     Other(String),
 }
 
