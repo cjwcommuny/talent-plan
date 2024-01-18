@@ -137,8 +137,7 @@ impl PeerEndPoint for RaftClient {
         let args = RequestVoteArgsProst {
             data: encode(&args),
         };
-        self
-            .request_vote(&args)
+        self.request_vote(&args)
             .await
             .map(|prost| decode(&prost.data))
             .map_err(raft::Error::Rpc)
@@ -148,8 +147,7 @@ impl PeerEndPoint for RaftClient {
         let args = AppendEntriesArgsProst {
             data: encode(&args),
         };
-        self
-            .append_entries(&args)
+        self.append_entries(&args)
             .await
             .map(|prost| decode(&prost.data))
             .map_err(raft::Error::Rpc)

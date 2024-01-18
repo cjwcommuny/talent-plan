@@ -317,10 +317,10 @@ impl RaftService for Node {
                 sender,
             }
         })
-            .await
-            .map(|reply| RequestVoteReplyProst {
-                data: encode(&reply),
-            })
+        .await
+        .map(|reply| RequestVoteReplyProst {
+            data: encode(&reply),
+        })
     }
 
     async fn append_entries(
@@ -333,10 +333,10 @@ impl RaftService for Node {
                 sender,
             }
         })
-            .await
-            .map(|reply| AppendEntriesReplyProst {
-                data: encode(&reply),
-            })
+        .await
+        .map(|reply| AppendEntriesReplyProst {
+            data: encode(&reply),
+        })
     }
 }
 
