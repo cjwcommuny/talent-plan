@@ -26,7 +26,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            heartbeat_cycle: 100,
+            heartbeat_cycle: 50,
             election_timeout: 200..500,
         }
     }
