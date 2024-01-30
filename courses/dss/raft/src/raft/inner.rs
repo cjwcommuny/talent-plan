@@ -13,7 +13,6 @@ use std::fmt::{Debug, Formatter};
 use std::ops::Range;
 
 use crate::raft::message_handler::MessageHandler;
-use crate::raft::outdated_message::WithIdAndSerialManager;
 use tokio::sync::oneshot;
 
 pub struct Config {
@@ -27,7 +26,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            heartbeat_cycle: 100,
+            heartbeat_cycle: 50,
             election_timeout: 200..500,
         }
     }
@@ -133,26 +132,22 @@ where
 }
 
 #[async_trait]
-impl PeerEndPoint for WithIdAndSerialManager<RaftClient> {
+impl PeerEndPoint for RaftClient {
     async fn request_vote(&self, args: RequestVoteArgs) -> raft::Result<RequestVoteReply> {
-        let args = self.new_args(args);
         let args = RequestVoteArgsProst {
             data: encode(&args),
         };
-        self.inner()
-            .request_vote(&args)
+        self.request_vote(&args)
             .await
             .map(|prost| decode(&prost.data))
             .map_err(raft::Error::Rpc)
     }
 
     async fn append_entries(&self, args: AppendEntriesArgs) -> raft::Result<AppendEntriesReply> {
-        let args = self.new_args(args);
         let args = AppendEntriesArgsProst {
             data: encode(&args),
         };
-        self.inner()
-            .append_entries(&args)
+        self.append_entries(&args)
             .await
             .map(|prost| decode(&prost.data))
             .map_err(raft::Error::Rpc)

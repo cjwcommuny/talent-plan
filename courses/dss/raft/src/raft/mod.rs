@@ -22,7 +22,6 @@ mod handle;
 mod inner;
 mod leader;
 mod message_handler;
-mod outdated_message;
 pub mod persister;
 mod role;
 mod rpc;
@@ -34,10 +33,6 @@ use crate::raft::common::set_panic_with_log;
 
 use crate::raft::inner::{Config, Inner, LocalTask};
 use crate::raft::message_handler::MessageHandler;
-use crate::raft::outdated_message::{
-    IdAndSerialManager, OutdatedMessageDiscarder, WithIdAndSerial, WithIdAndSerialManager,
-};
-use crate::raft::rpc::{AppendEntriesArgs, RequestVoteArgs};
 
 /// As each Raft peer becomes aware that successive log entries are committed,
 /// the peer should send an `ApplyMsg` to the service (or tester) on the same
@@ -80,7 +75,7 @@ type TermId = u64;
 // A single Raft peer.
 pub struct Raft {
     /// for RPC calls
-    remote_task_sender: mpsc::Sender<WithIdAndSerial<RemoteTask>>,
+    remote_task_sender: mpsc::Sender<RemoteTask>,
     local_task_sender: mpsc::Sender<LocalTask>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
     node_id: NodeId,
@@ -120,8 +115,6 @@ impl Raft {
 
         let raft_runtime = Runtime::new().unwrap();
 
-        set_panic_with_log();
-
         let persistent_state = Handle::restore(persister.raft_state());
         let handle_builder = Handle::builder()
             .node_id(node_id)
@@ -143,23 +136,18 @@ impl Raft {
                 .logs(Logs::default())
                 .build()
         };
-        let id_and_serial_manager = Arc::new(IdAndSerialManager::new());
         let message_handler = MessageHandler::new(
             peers
                 .into_iter()
-                .map(|client| {
-                    Box::new(WithIdAndSerialManager::new(
-                        id_and_serial_manager.clone(),
-                        client,
-                    )) as _
-                })
+                .map(|client| Box::new(client) as _)
                 .collect(),
-            OutdatedMessageDiscarder::new(remote_task_receiver),
+            remote_task_receiver,
             local_task_receiver,
         );
 
         // different node should has different seeds
         let join_handle = std::thread::spawn(move || {
+            set_panic_with_log();
             let raft_inner = Inner::new(Role::default(), handle, message_handler);
             raft_runtime.block_on(raft_inner.raft_main());
         });
@@ -323,10 +311,11 @@ impl RaftService for Node {
         &self,
         args: RequestVoteArgsProst,
     ) -> labrpc::Result<RequestVoteReplyProst> {
-        let WithIdAndSerial::<RequestVoteArgs> { id, serial, data } = decode(&args.data);
-
         pass_message(&self.raft.remote_task_sender, |sender| {
-            WithIdAndSerial::new(id, serial, RemoteTask::RequestVote { args: data, sender })
+            RemoteTask::RequestVote {
+                args: decode(&args.data),
+                sender,
+            }
         })
         .await
         .map(|reply| RequestVoteReplyProst {
@@ -338,10 +327,11 @@ impl RaftService for Node {
         &self,
         args: AppendEntriesArgsProst,
     ) -> labrpc::Result<AppendEntriesReplyProst> {
-        let WithIdAndSerial::<AppendEntriesArgs> { id, serial, data } = decode(&args.data);
-
         pass_message(&self.raft.remote_task_sender, |sender| {
-            WithIdAndSerial::new(id, serial, RemoteTask::AppendEntries { args: data, sender })
+            RemoteTask::AppendEntries {
+                args: decode(&args.data),
+                sender,
+            }
         })
         .await
         .map(|reply| AppendEntriesReplyProst {

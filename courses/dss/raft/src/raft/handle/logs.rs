@@ -55,6 +55,12 @@ impl Logs {
         let mutation_offset = (0..max_offset)
             .find(|offset| entries[*offset].term != self.logs[tail_begin + *offset].term)
             .unwrap_or(max_offset);
+
+        // when entries all matched but the logs are longer
+        if mutation_offset == entries.len() {
+            return;
+        }
+
         let mutation_begin = tail_begin + mutation_offset;
         // must not modify committed logs
         assert_le!(
