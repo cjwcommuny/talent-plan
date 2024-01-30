@@ -1,4 +1,4 @@
-use crate::raft::inner::LocalTask;
+use crate::raft::inner::{LocalTask, PeerEndPoint};
 use crate::raft::inner::RemoteTaskResult;
 use crate::raft::leader::AppendEntriesResult::{Commit, Retry, UpdateTermAndTransitToFollower};
 use crate::raft::role::Role;
@@ -28,8 +28,9 @@ use tracing::{info, instrument, trace, trace_span, warn};
 /// inner structure for `ApplyMsg`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LogKind {
-    Command,
-    Snapshot,
+    Command {data: Vec<u8>,},
+    Snapshot{data: Vec<u8>,},
+    NoOp,
 }
 
 pub type NextIndex = usize;
@@ -185,7 +186,26 @@ impl Leader {
             Shutdown => Role::Shutdown,
         }
     }
+
+    fn send_append_entries(&self, handle: &mut Handle, peers: &[Box<dyn PeerEndPoint + Send>]) {
+        let me = handle.node_id;
+        let current_term = handle.election.current_term();
+        let index = handle.add_log(LogKind::Command, data, current_term);
+        self.match_length[me] = index + 1;
+        sender.send(Some((index as u64, current_term))).unwrap();
+        let futures = message_handler
+            .node_ids_except(me)
+            .map(|peer_id| {
+                let next_index = self.next_index[peer_id];
+                let args = build_append_entries_args(me, &handle.election, &handle.logs, next_index);
+                let future = peers[peer_id].append_entries(args);
+                let context = ReplyContext::new(peer_id, next_index);
+                with_context(future, context)
+            });
+    }
 }
+
+
 
 #[derive(Debug)]
 enum LoopResult {
@@ -333,33 +353,24 @@ fn build_append_entries_args(
 #[derive(Debug, Clone, Eq, PartialEq, new, Serialize, Deserialize)]
 pub struct LogEntry {
     log_kind: LogKind,
-    data: Vec<u8>,
     pub term: TermId,
 }
 
-impl From<(usize, LogEntry)> for ApplyMsg {
-    fn from(value: (usize, LogEntry)) -> Self {
-        let (index, entry) = value;
-        let LogEntry {
-            log_kind,
+fn log_entry_to_apply_msg(index: usize, LogEntry{log_kind, term}: LogEntry) -> Option<ApplyMsg> {
+    // The test code uses indices starting from 1,
+    // while the implementation uses indices starting from 0.
+    let one_based_index = index as u64 + 1;
+    match log_kind {
+        LogKind::Command {data} => Some(ApplyMsg::Command {
+            data,
+            index: one_based_index,
+        }),
+        LogKind::Snapshot {data} => Some(ApplyMsg::Snapshot {
             data,
             term,
-        } = entry;
-
-        // The test code uses indices starting from 1,
-        // while the implementation uses indices starting from 0.
-        let one_based_index = index as u64 + 1;
-        match log_kind {
-            LogKind::Command => ApplyMsg::Command {
-                data,
-                index: one_based_index,
-            },
-            LogKind::Snapshot => ApplyMsg::Snapshot {
-                data,
-                term,
-                index: one_based_index,
-            },
-        }
+            index: one_based_index,
+        }),
+        LogKind::NoOp => None,
     }
 }
 
