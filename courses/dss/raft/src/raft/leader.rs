@@ -134,7 +134,7 @@ impl Leader {
                                     }
                                 }
                             }
-                            Err(e) => warn!(rpc_error = e.to_string(), "rpc error"),
+                            Err(e) => warn!(%e, "rpc error"),
                         }
                     }
                     Some(task) = message_handler.local_tasks.next() => {
@@ -201,7 +201,7 @@ fn on_receive_append_entries_reply(
     follower_id: NodeId,
     current_term: TermId,
 ) -> AppendEntriesResult {
-    trace!(old_next_index, follower_id, current_term);
+    trace!(%old_next_index, follower_id, current_term);
     trace!(?reply);
     trace!(?logs);
     match reply.term.cmp(&current_term) {
