@@ -68,13 +68,13 @@ impl Candidate {
                     _ = election_timeout.next() => {
                         break 'collect_vote RestartAsCandidate;
                     }
-                    Some(task) = message_handler.remote_task_receiver.recv() => {
+                    Some(task) = message_handler.remote_tasks.next() => {
                         let RemoteTaskResult { transit_to_follower } = task.handle(handle).await;
                         if transit_to_follower {
                             break 'collect_vote TransitToFollower;
                         }
                     }
-                    Some(task) = message_handler.local_task_receiver.recv() => {
+                    Some(task) = message_handler.local_tasks.next() => {
                         match task {
                             LocalTask::AppendEntries { sender, .. } => sender.send(None).unwrap(),
                             LocalTask::GetTerm(sender) => sender.send(handle.election.current_term()).unwrap(),

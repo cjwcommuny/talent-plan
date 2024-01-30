@@ -141,8 +141,8 @@ impl Raft {
                 .into_iter()
                 .map(|client| Box::new(client) as _)
                 .collect(),
-            remote_task_receiver,
-            local_task_receiver,
+            remote_task_receiver.into(),
+            local_task_receiver.into(),
         );
 
         // different node should has different seeds

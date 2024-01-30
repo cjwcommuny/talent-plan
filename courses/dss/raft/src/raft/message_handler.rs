@@ -4,12 +4,13 @@ use derive_new::new;
 use num::integer::div_ceil;
 use std::fmt::{Debug, Formatter};
 use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
 #[derive(new)]
 pub struct MessageHandler {
     pub peers: Vec<Box<dyn PeerEndPoint + Send>>, // RPC end points of all peers
-    pub remote_task_receiver: mpsc::Receiver<RemoteTask>,
-    pub local_task_receiver: mpsc::Receiver<LocalTask>,
+    pub remote_tasks: ReceiverStream<RemoteTask>,
+    pub local_tasks: ReceiverStream<LocalTask>,
 }
 
 impl Debug for MessageHandler {

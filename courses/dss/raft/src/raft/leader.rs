@@ -137,7 +137,7 @@ impl Leader {
                             Err(e) => warn!(rpc_error = e.to_string(), "rpc error"),
                         }
                     }
-                    Some(task) = message_handler.local_task_receiver.recv() => {
+                    Some(task) = message_handler.local_tasks.next() => {
                         match task {
                             LocalTask::AppendEntries { data, sender } => {
                                 // trace!("term={}, local task append entries", handle.election.current_term());
@@ -165,7 +165,7 @@ impl Leader {
                             }
                         }
                     }
-                    Some(task) = message_handler.remote_task_receiver.recv() => {
+                    Some(task) = message_handler.remote_tasks.next() => {
                         trace!("handle remote task");
                         let RemoteTaskResult { transit_to_follower } = task.handle(handle).await;
                         if transit_to_follower {
