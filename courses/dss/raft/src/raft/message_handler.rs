@@ -3,7 +3,7 @@ use crate::raft::NodeId;
 use derive_new::new;
 use num::integer::div_ceil;
 use std::fmt::{Debug, Formatter};
-use tokio::sync::mpsc;
+
 use tokio_stream::wrappers::ReceiverStream;
 
 #[derive(new)]

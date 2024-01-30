@@ -6,11 +6,11 @@ use crate::raft::handle::Handle;
 use crate::raft::leader::Leader;
 use crate::raft::message_handler::MessageHandler;
 use crate::raft::role::Role;
-use futures::{pin_mut, stream, Stream, StreamExt};
+use futures::{pin_mut, stream, StreamExt};
 use futures_concurrency::stream::Merge;
 use rand::Rng;
 use std::time::Duration;
-use tokio::select;
+
 use tokio::time::sleep;
 use tracing::{info, trace_span};
 
