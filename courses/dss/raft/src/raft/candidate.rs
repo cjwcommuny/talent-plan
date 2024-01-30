@@ -80,51 +80,50 @@ impl Candidate {
 
         let vote_result = 'collect_vote: {
             while votes_received.len() < majority_threshold {
-                if let Some(message) = messages.next().await {
-                    match message {
-                        Message::Timeout => break 'collect_vote RestartAsCandidate,
-                        Message::ServerTask(task) => {
-                            let RemoteTaskResult {
-                                transit_to_follower,
-                            } = task.handle(handle).await;
-                            if transit_to_follower {
-                                break 'collect_vote TransitToFollower;
-                            }
+                let Some(message) = messages.next().await else {
+                    continue;
+                };
+                match message {
+                    Message::Timeout => break 'collect_vote RestartAsCandidate,
+                    Message::ServerTask(task) => {
+                        let RemoteTaskResult {
+                            transit_to_follower,
+                        } = task.handle(handle).await;
+                        if transit_to_follower {
+                            break 'collect_vote TransitToFollower;
                         }
-                        Message::ClientTask(task) => match task {
-                            LocalTask::AppendEntries { sender, .. } => sender.send(None).unwrap(),
-                            LocalTask::GetTerm(sender) => {
-                                sender.send(handle.election.current_term()).unwrap()
-                            }
-                            LocalTask::CheckLeader(sender) => sender.send(false).unwrap(),
-                            LocalTask::Shutdown(sender) => {
-                                sender.send(()).unwrap();
-                                break 'collect_vote Shutdown;
-                            }
-                        },
-                        Message::RequestVoteResponse(FutureOutput {
-                            output: reply_result,
-                            context: peer_id,
-                        }) => {
-                            let current_term = handle.election.current_term();
-                            match reply_result {
-                                Ok(reply) => {
-                                    if reply.term == current_term && reply.vote_granted {
-                                        trace!("receive vote granted from {peer_id}");
-                                        votes_received.insert(peer_id);
-                                    } else if reply.term > current_term {
-                                        handle.update_current_term(reply.term);
-                                        handle.election.voted_for = None;
-                                        break 'collect_vote TransitToFollower;
-                                    } else {
-                                        trace!("term={}, received outdated votes or non-granted votes, reply.term: {}", current_term, reply.term);
-                                    }
+                    }
+                    Message::ClientTask(task) => match task {
+                        LocalTask::AppendEntries { sender, .. } => sender.send(None).unwrap(),
+                        LocalTask::GetTerm(sender) => {
+                            sender.send(handle.election.current_term()).unwrap()
+                        }
+                        LocalTask::CheckLeader(sender) => sender.send(false).unwrap(),
+                        LocalTask::Shutdown(sender) => {
+                            sender.send(()).unwrap();
+                            break 'collect_vote Shutdown;
+                        }
+                    },
+                    Message::RequestVoteResponse(FutureOutput {
+                        output: reply_result,
+                        context: peer_id,
+                    }) => {
+                        let current_term = handle.election.current_term();
+                        match reply_result {
+                            Ok(reply) => {
+                                if reply.term == current_term && reply.vote_granted {
+                                    trace!("receive vote granted from {peer_id}");
+                                    votes_received.insert(peer_id);
+                                } else if reply.term > current_term {
+                                    handle.update_current_term(reply.term);
+                                    handle.election.voted_for = None;
+                                    break 'collect_vote TransitToFollower;
+                                } else {
+                                    trace!("term={}, received outdated votes or non-granted votes, reply.term: {}", current_term, reply.term);
                                 }
-                                Err(e) => warn!(
-                                    "term={}, {}",
-                                    handle.election.current_term(),
-                                    e.to_string()
-                                ),
+                            }
+                            Err(e) => {
+                                warn!("term={}, {}", handle.election.current_term(), e.to_string())
                             }
                         }
                     }
