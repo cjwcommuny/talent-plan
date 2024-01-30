@@ -15,7 +15,7 @@ use crate::raft::NodeId;
 use futures_concurrency::stream::Merge;
 use rand::Rng;
 use std::time::Duration;
-use tokio::select;
+
 use tokio::time::sleep;
 use tracing::{info, trace, trace_span, warn};
 
