@@ -4,6 +4,7 @@ use crate::raft::role::Role;
 use crate::raft::{ApplyMsg, NodeId, TermId};
 use futures::{stream::FuturesUnordered, StreamExt};
 use std::cmp::Ordering::{Equal, Greater, Less};
+use std::ops::ControlFlow;
 
 use derive_new::new;
 use serde::{Deserialize, Serialize};
@@ -76,32 +77,22 @@ impl Leader {
                         let _span = trace_span!("append entries receive reply", follower_id, old_next_index).entered();
                         match result {
                             Ok(reply) => {
-                                match on_receive_append_entries_reply(
+                                let result = on_receive_append_entries_reply(
                                     &handle.logs,
                                     old_next_index,
                                     reply,
                                     follower_id,
                                     handle.election.current_term()
-                                ) {
-                                    Commit{ follower_id, match_length } => {
-                                        trace!("commit");
-                                        self.next_index[follower_id] = match_length;
-                                        self.match_length[follower_id] = match_length;
-                                        try_commit_logs(&self, handle, message_handler).await
-                                    }
-                                    Retry { follower_id, new_next_index } => {
-                                        trace!("retry");
-                                        self.next_index[follower_id] = new_next_index;
-                                        let args = build_append_entries_args(me, &handle.election, &handle.logs, new_next_index);
-                                        let future = message_handler.peers[follower_id].append_entries(args);
-                                        let context = ReplyContext::new(follower_id, new_next_index);
-                                        rpc_replies.push(with_context(future, context));
-                                    }
-                                    UpdateTermAndTransitToFollower(new_term) => {
-                                        trace!("update terem and transit to follower");
-                                        handle.update_current_term(new_term);
-                                        break TransitToFollower;
-                                    }
+                                );
+                                let control_flow = self.on_receive_append_entries_result(
+                                    result,
+                                    handle,
+                                    &message_handler.peers,
+                                    &mut rpc_replies,
+                                    message_handler.majority_threshold(),
+                                ).await;
+                                if let ControlFlow::Break(loop_result) = control_flow {
+                                    break loop_result;
                                 }
                             }
                             Err(e) => warn!(%e, "rpc error"),
@@ -162,6 +153,53 @@ impl Leader {
             let context = ReplyContext::new(peer_id, next_index);
             with_context(future, context)
         })
+    }
+
+    async fn on_receive_append_entries_result<'a, 'peer>(
+        &'a mut self,
+        result: AppendEntriesResult,
+        handle: &'a mut Handle,
+        peers: &'peer [Box<dyn PeerEndPoint + Send>],
+        rpc_replies: &'a mut FuturesUnordered<
+            FutureWithContext<AppendEntriesFuture<'peer>, ReplyContext>,
+        >,
+        commit_threshold: usize,
+    ) -> ControlFlow<LoopResult, ()> {
+        use ControlFlow::{Break, Continue};
+        match result {
+            Commit {
+                follower_id,
+                match_length,
+            } => {
+                trace!("commit");
+                self.next_index[follower_id] = match_length;
+                self.match_length[follower_id] = match_length;
+                try_commit_logs(self, handle, commit_threshold).await;
+                Continue(())
+            }
+            Retry {
+                follower_id,
+                new_next_index,
+            } => {
+                trace!("retry");
+                self.next_index[follower_id] = new_next_index;
+                let args = build_append_entries_args(
+                    handle.node_id,
+                    &handle.election,
+                    &handle.logs,
+                    new_next_index,
+                );
+                let future = peers[follower_id].append_entries(args);
+                let context = ReplyContext::new(follower_id, new_next_index);
+                rpc_replies.push(with_context(future, context));
+                Continue(())
+            }
+            UpdateTermAndTransitToFollower(new_term) => {
+                trace!("update term and transit to follower");
+                handle.update_current_term(new_term);
+                Break(LoopResult::TransitToFollower)
+            }
+        }
     }
 }
 
@@ -262,8 +300,7 @@ enum AppendEntriesResult {
 /// 1. the log is replicated on the majority of servers
 /// 2. the log with max term that is replicated on the majority of servers is from current term
 #[instrument(level = "debug")]
-async fn try_commit_logs(leader: &Leader, handle: &mut Handle, message_handle: &MessageHandler) {
-    let commit_threshold = message_handle.majority_threshold();
+async fn try_commit_logs(leader: &Leader, handle: &mut Handle, commit_threshold: usize) {
     let compute_acks = |length_threshold| {
         let acks = leader
             .match_length
