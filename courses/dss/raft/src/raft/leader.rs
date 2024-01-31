@@ -62,35 +62,14 @@ impl Leader {
         use LoopResult::{Shutdown, TransitToFollower};
         let peers = &message_handler.peers;
         let loop_result: LoopResult = {
-            let mut rpc_replies: FuturesUnordered<_> = {
-                let me = handle.node_id;
-                let params: Vec<_> = message_handler
-                    .node_ids_except(me)
-                    .map(|peer_id| {
-                        let next_index = self.next_index[peer_id];
-                        let args = build_append_entries_args(
-                            me,
-                            &handle.election,
-                            &handle.logs,
-                            next_index,
-                        );
-                        (peer_id, next_index, args)
-                    })
-                    .collect();
-                params
-                    .into_iter()
-                    .map(|(peer_id, next_index, args)| {
-                        let future = peers[peer_id].append_entries(args);
-                        let context = ReplyContext::new(peer_id, next_index);
-                        with_context(future, context)
-                    })
-                    .collect()
-            };
+            let mut rpc_replies: FuturesUnordered<_> = self
+                .send_append_entries_futures(handle, message_handler, peers, handle.node_id)
+                .collect();
             loop {
                 select! {
                     _ = heartbeat_timer.tick() => {
                         trace!("term={}, send heartbeat", handle.election.current_term());
-                        let futures = self.send_append_entries(handle, message_handler, peers, me);
+                        let futures = self.send_append_entries_futures(handle, message_handler, peers, me);
                         rpc_replies.extend(futures)
                     }
                     Some(FutureOutput { output: result, context: ReplyContext { follower_id, old_next_index }}) = rpc_replies.next() => {
@@ -137,7 +116,7 @@ impl Leader {
                                 let index = handle.add_log(LogKind::Command, data, current_term);
                                 self.match_length[me] = index + 1;
                                 sender.send(Some((index as u64, current_term))).unwrap();
-                                let futures = self.send_append_entries(handle, message_handler, peers, me);
+                                let futures = self.send_append_entries_futures(handle, message_handler, peers, me);
                                 rpc_replies.extend(futures);
                             }
                             LocalTask::GetTerm(sender) => sender.send(handle.election.current_term()).unwrap(),
@@ -168,7 +147,7 @@ impl Leader {
         }
     }
 
-    fn send_append_entries<'peer: 'iter, 'iter>(
+    fn send_append_entries_futures<'peer: 'iter, 'iter>(
         &'iter self,
         handle: &'iter Handle,
         message_handler: &'iter MessageHandler,
