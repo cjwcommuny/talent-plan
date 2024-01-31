@@ -55,7 +55,8 @@ pub struct FutureOutput<Output, Context> {
     pub context: Context,
 }
 
-pub fn with_context<F, C>(future: F, context: C) -> impl Future<Output = FutureOutput<F::Output, C>>
+pub type FutureWithContext<F: Future, C> = impl Future<Output = FutureOutput<F::Output, C>>;
+pub fn with_context<F, C>(future: F, context: C) -> FutureWithContext<F, C>
 where
     F: Future,
 {

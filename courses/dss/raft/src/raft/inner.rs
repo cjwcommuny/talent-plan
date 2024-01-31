@@ -10,7 +10,9 @@ use async_trait::async_trait;
 
 use derive_new::new;
 use std::fmt::{Debug, Formatter};
+use std::future::Future;
 use std::ops::Range;
+use std::pin::Pin;
 
 use crate::raft::message_handler::MessageHandler;
 use tokio::sync::oneshot;
@@ -113,6 +115,8 @@ pub trait PeerEndPoint {
     async fn request_vote(&self, args: RequestVoteArgs) -> raft::Result<RequestVoteReply>;
     async fn append_entries(&self, args: AppendEntriesArgs) -> raft::Result<AppendEntriesReply>;
 }
+
+pub type AppendEntriesFuture<'a> = Pin<Box<dyn Future<Output = raft::Result<AppendEntriesReply>> + Send + 'a>>;
 
 #[async_trait]
 impl<T> PeerEndPoint for Box<T>
