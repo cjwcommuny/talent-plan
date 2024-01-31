@@ -1,4 +1,3 @@
-use crate::raft::inner::RemoteTaskResult;
 use crate::raft::inner::{AppendEntriesFuture, LocalTask, PeerEndPoint};
 use crate::raft::leader::AppendEntriesResult::{Commit, Retry, UpdateTermAndTransitToFollower};
 use crate::raft::role::Role;
@@ -151,8 +150,7 @@ impl Leader {
                     }
                     Some(task) = message_handler.remote_tasks.next() => {
                         trace!("handle remote task");
-                        let RemoteTaskResult { transit_to_follower } = task.handle(handle).await;
-                        if transit_to_follower {
+                        if task.handle(handle).await.transit_to_follower {
                             break TransitToFollower;
                         }
                     }
