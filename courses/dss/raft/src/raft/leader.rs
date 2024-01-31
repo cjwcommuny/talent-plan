@@ -1,11 +1,10 @@
-use crate::raft::inner::{AppendEntriesFuture, LocalTask, PeerEndPoint};
 use crate::raft::inner::RemoteTaskResult;
+use crate::raft::inner::{AppendEntriesFuture, LocalTask, PeerEndPoint};
 use crate::raft::leader::AppendEntriesResult::{Commit, Retry, UpdateTermAndTransitToFollower};
 use crate::raft::role::Role;
-use crate::raft::{ApplyMsg, Node, NodeId, TermId};
+use crate::raft::{ApplyMsg, NodeId, TermId};
 use futures::{stream::FuturesUnordered, StreamExt};
 use std::cmp::Ordering::{Equal, Greater, Less};
-use std::future::Future;
 
 use derive_new::new;
 use serde::{Deserialize, Serialize};
@@ -92,7 +91,7 @@ impl Leader {
                 select! {
                     _ = heartbeat_timer.tick() => {
                         trace!("term={}, send heartbeat", handle.election.current_term());
-                        let futures = self.send_append_entries(&handle, message_handler, peers, me);
+                        let futures = self.send_append_entries(handle, message_handler, peers, me);
                         rpc_replies.extend(futures)
                     }
                     Some(FutureOutput { output: result, context: ReplyContext { follower_id, old_next_index }}) = rpc_replies.next() => {
@@ -139,7 +138,7 @@ impl Leader {
                                 let index = handle.add_log(LogKind::Command, data, current_term);
                                 self.match_length[me] = index + 1;
                                 sender.send(Some((index as u64, current_term))).unwrap();
-                                let futures = self.send_append_entries(&handle, message_handler, peers, me);
+                                let futures = self.send_append_entries(handle, message_handler, peers, me);
                                 rpc_replies.extend(futures);
                             }
                             LocalTask::GetTerm(sender) => sender.send(handle.election.current_term()).unwrap(),
@@ -177,20 +176,17 @@ impl Leader {
         message_handler: &'iter MessageHandler,
         peers: &'peer [Box<dyn PeerEndPoint + Send>],
         me: NodeId,
-    ) -> impl Iterator<Item = FutureWithContext<AppendEntriesFuture<'peer>, ReplyContext>> + 'iter {
-        message_handler
-            .node_ids_except(me)
-            .map(move |peer_id| {
-                let next_index = self.next_index[peer_id];
-                let args = build_append_entries_args(me, &handle.election, &handle.logs, next_index);
-                let future: AppendEntriesFuture = peers[peer_id].append_entries(args);
-                let context = ReplyContext::new(peer_id, next_index);
-                with_context(future, context)
-            })
+    ) -> impl Iterator<Item = FutureWithContext<AppendEntriesFuture<'peer>, ReplyContext>> + 'iter
+    {
+        message_handler.node_ids_except(me).map(move |peer_id| {
+            let next_index = self.next_index[peer_id];
+            let args = build_append_entries_args(me, &handle.election, &handle.logs, next_index);
+            let future: AppendEntriesFuture = peers[peer_id].append_entries(args);
+            let context = ReplyContext::new(peer_id, next_index);
+            with_context(future, context)
+        })
     }
 }
-
-
 
 #[derive(Debug)]
 enum LoopResult {

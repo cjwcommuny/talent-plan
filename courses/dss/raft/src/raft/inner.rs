@@ -116,7 +116,8 @@ pub trait PeerEndPoint {
     async fn append_entries(&self, args: AppendEntriesArgs) -> raft::Result<AppendEntriesReply>;
 }
 
-pub type AppendEntriesFuture<'a> = Pin<Box<dyn Future<Output = raft::Result<AppendEntriesReply>> + Send + 'a>>;
+pub type AppendEntriesFuture<'a> =
+    Pin<Box<dyn Future<Output = raft::Result<AppendEntriesReply>> + Send + 'a>>;
 
 #[async_trait]
 impl<T> PeerEndPoint for Box<T>
