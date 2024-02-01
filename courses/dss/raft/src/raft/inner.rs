@@ -9,13 +9,18 @@ use crate::raft::TermId;
 use async_trait::async_trait;
 
 use derive_new::new;
+use futures::SinkExt;
+use futures::{Sink, Stream};
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
 use std::ops::Range;
 use std::pin::Pin;
+use tokio::sync::mpsc::channel;
+use tokio_util::sync::PollSender;
 
 use crate::raft::message_handler::MessageHandler;
 use tokio::sync::oneshot;
+use tokio_stream::wrappers::ReceiverStream;
 
 pub struct Config {
     pub heartbeat_cycle: u64,
@@ -116,6 +121,31 @@ pub trait PeerEndPoint {
     async fn append_entries(&self, args: AppendEntriesArgs) -> raft::Result<AppendEntriesReply>;
 }
 
+pub trait RequestVoteChannel {
+    type RequestVoteArgsSink<'a>: Sink<RequestVoteArgs, Error = raft::Error> + 'a
+    where
+        Self: 'a;
+    type RequestVoteReplyStream<'a>: Stream<Item = RequestVoteReply> + 'a
+    where
+        Self: 'a;
+
+    fn request_vote_channel(
+        &self,
+    ) -> (
+        Self::RequestVoteArgsSink<'_>,
+        Self::RequestVoteReplyStream<'_>,
+    );
+}
+
+pub trait AppendEntriesChannel {
+    type AppendEntriesArgsSink: Sink<AppendEntriesArgs, Error = raft::Error>;
+    type AppendEntriesReplyStream: Stream<Item = AppendEntriesReply>;
+
+    fn append_entries_channel(
+        &self,
+    ) -> (Self::AppendEntriesArgsSink, Self::AppendEntriesReplyStream);
+}
+
 pub type AppendEntriesFuture<'a> =
     Pin<Box<dyn Future<Output = raft::Result<AppendEntriesReply>> + Send + 'a>>;
 
@@ -156,5 +186,23 @@ impl PeerEndPoint for RaftClient {
             .await
             .map(|prost| decode(&prost.data))
             .map_err(raft::Error::Rpc)
+    }
+}
+
+impl<T> RequestVoteChannel for T where T: PeerEndPoint {
+    type RequestVoteArgsSink<'a> = impl Sink<RequestVoteArgs, Error = raft::Error> + 'a where Self: 'a;
+    type RequestVoteReplyStream<'a> = impl Stream<Item = RequestVoteReply> + 'a where Self: 'a;
+
+    fn request_vote_channel(
+        &self,
+    ) -> (
+        Self::RequestVoteArgsSink<'_>,
+        Self::RequestVoteReplyStream<'_>,
+    ) {
+        let (sender, receiver) = channel(100);
+        let stream = ReceiverStream::new(receiver);
+        let sink = PollSender::new(sender)
+            .with(move |args: RequestVoteArgs| PeerEndPoint::request_vote(self, args));
+        (sink, stream)
     }
 }

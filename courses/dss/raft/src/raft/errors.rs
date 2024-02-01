@@ -1,9 +1,11 @@
 use std::{error, fmt, result};
+use tokio_util::sync::PollSendError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Encode(labcodec::EncodeError),
     Decode(labcodec::DecodeError),
+    PollSendError,
     Rpc(labrpc::Error),
     NotLeader,
 }
@@ -19,9 +21,16 @@ impl error::Error for Error {
         match *self {
             Self::Encode(ref e) => Some(e),
             Self::Decode(ref e) => Some(e),
+            Self::PollSendError => None,
             Self::Rpc(ref e) => Some(e),
             Self::NotLeader => None,
         }
+    }
+}
+
+impl<T> From<PollSendError<T>> for Error {
+    fn from(_value: PollSendError<T>) -> Self {
+        Self::PollSendError
     }
 }
 
