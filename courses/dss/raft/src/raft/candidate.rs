@@ -1,5 +1,5 @@
+use crate::raft::inner::{ClientChannel, RemoteTaskResult};
 use crate::raft::inner::{LocalTask, RemoteTask, WithNodeId};
-use crate::raft::inner::{RemoteTaskResult, RequestVoteChannel};
 use crate::raft::leader::Leader;
 use crate::raft::role::Role;
 use futures::{stream, SinkExt, StreamExt};
