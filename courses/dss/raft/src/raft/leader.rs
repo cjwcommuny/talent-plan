@@ -1,8 +1,8 @@
-use crate::raft::inner::{AppendEntriesFuture, LocalTask, PeerEndPoint};
+use crate::raft::inner::{AppendEntriesFuture, ClientChannel, LocalTask, PeerEndPoint, RemoteTask, WithNodeId};
 use crate::raft::leader::AppendEntriesResult::{Commit, Retry, UpdateTermAndTransitToFollower};
 use crate::raft::role::Role;
 use crate::raft::{ApplyMsg, NodeId, TermId};
-use futures::{stream::FuturesUnordered, StreamExt};
+use futures::{pin_mut, Sink, SinkExt, stream::FuturesUnordered, StreamExt};
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::ops::ControlFlow;
 
@@ -20,10 +20,14 @@ use crate::raft::message_handler::MessageHandler;
 use crate::raft::rpc::AppendEntriesReplyResult::{
     LogNotContainThisEntry, LogNotMatch, Success, TermCheckFail,
 };
-use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply};
+use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply, RequestVoteReply};
 use tokio::select;
+use tokio::sync::mpsc::channel;
 use tokio::time::interval;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::PollSender;
 use tracing::{info, instrument, trace, trace_span, warn};
+use crate::raft;
 
 /// inner structure for `ApplyMsg`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +67,17 @@ impl Leader {
         use LoopResult::{Shutdown, TransitToFollower};
         let peers = &message_handler.peers;
         let loop_result: LoopResult = {
+            let (replies, sinks) = {
+                let (sender, receiver) = channel(100);
+                let replies = ReceiverStream::new(receiver).map(Message::AppendEntriesResponse);
+                let sink = PollSender::new(sender).sink_map_err(Into::into);
+                let sinks: Vec<_> = message_handler.peers.iter().map(|peer| {
+                        peer.register_append_entries_sink(sink.clone())
+                }).collect();
+                (replies, sinks)
+            };
+
+
             let mut rpc_replies: FuturesUnordered<_> = self
                 .send_append_entries_futures(handle, message_handler, peers, handle.node_id)
                 .collect();
@@ -155,6 +170,20 @@ impl Leader {
         })
     }
 
+    async fn send_append_entries<S>(
+        &self,
+        sinks: &mut [S],
+        handle: &Handle,
+        message_handler: &MessageHandler,
+        me: NodeId,
+    ) where S: Sink<WithNodeId<AppendEntriesArgs>, Error = raft::Error> + Unpin {
+        for peer_id in message_handler.node_ids_except(me) {
+            let next_index = self.next_index[peer_id];
+            let args = build_append_entries_args(me, &handle.election, &handle.logs, next_index);
+            sinks[peer_id].send(WithNodeId::new(args, peer_id)).await.unwrap();
+        }
+    }
+
     async fn on_receive_append_entries_result<'a, 'peer>(
         &'a mut self,
         result: AppendEntriesResult,
@@ -201,6 +230,13 @@ impl Leader {
             }
         }
     }
+}
+
+enum Message {
+    Timeout,
+    ServerTask(RemoteTask),
+    ClientTask(LocalTask),
+    AppendEntriesResponse(crate::raft::Result<WithNodeId<AppendEntriesReply>>),
 }
 
 #[derive(Debug)]
