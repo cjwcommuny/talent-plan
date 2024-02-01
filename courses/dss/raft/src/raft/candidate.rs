@@ -1,22 +1,24 @@
-use crate::raft::inner::RemoteTaskResult;
-use crate::raft::inner::{LocalTask, RemoteTask};
+use crate::raft::inner::{LocalTask, RemoteTask, WithNodeId};
+use crate::raft::inner::{RemoteTaskResult, RequestVoteChannel};
 use crate::raft::leader::Leader;
 use crate::raft::role::Role;
-use futures::{stream, stream::FuturesUnordered, StreamExt};
+use futures::{stream, SinkExt, StreamExt};
 use std::collections::HashSet;
 use std::fmt::Debug;
 
-use crate::raft::common::{with_context, FutureOutput};
 use crate::raft::follower::Follower;
 use crate::raft::handle::Handle;
 use crate::raft::message_handler::MessageHandler;
 use crate::raft::rpc::{RequestVoteArgs, RequestVoteReply};
-use crate::raft::NodeId;
+
 use futures_concurrency::stream::Merge;
 use rand::Rng;
 use std::time::Duration;
 
+use tokio::sync::mpsc::channel;
 use tokio::time::sleep;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::PollSender;
 use tracing::{info, trace, trace_span, warn};
 
 /// make the constructor private
@@ -62,16 +64,24 @@ impl Candidate {
             .remote_tasks
             .by_ref()
             .map(Message::ServerTask);
-        let replies: FuturesUnordered<_> = {
-            trace!(
-                "term={}, send vote requests",
-                handle.election.current_term()
-            );
-            node_ids
-                .map(|peer_id| with_context(peers[peer_id].request_vote(args.clone()), peer_id))
-                .collect()
+
+        let replies = {
+            let (sender, receiver) = channel(100);
+            let sink = PollSender::new(sender).sink_map_err(Into::into);
+            for peer_id in node_ids {
+                trace!(
+                    "term={}, send vote requests",
+                    handle.election.current_term()
+                );
+                peers[peer_id]
+                    .register_request_vote_sink(sink.clone())
+                    .send(WithNodeId::new(args.clone(), peer_id))
+                    .await
+                    .unwrap();
+            }
+            ReceiverStream::new(receiver).map(Message::RequestVoteResponse)
         };
-        let replies = replies.map(Message::RequestVoteResponse);
+
         let messages = (election_timeout, client_tasks, server_tasks, replies).merge();
         futures::pin_mut!(messages);
 
@@ -104,13 +114,13 @@ impl Candidate {
                             break 'collect_vote Shutdown;
                         }
                     },
-                    Message::RequestVoteResponse(FutureOutput {
-                        output: reply_result,
-                        context: peer_id,
-                    }) => {
+                    Message::RequestVoteResponse(reply_result) => {
                         let current_term = handle.election.current_term();
                         match reply_result {
-                            Ok(reply) => {
+                            Ok(WithNodeId {
+                                payload: reply,
+                                node_id: peer_id,
+                            }) => {
                                 if reply.term == current_term && reply.vote_granted {
                                     trace!("receive vote granted from {peer_id}");
                                     votes_received.insert(peer_id);
@@ -153,7 +163,7 @@ enum Message {
     Timeout,
     ServerTask(RemoteTask),
     ClientTask(LocalTask),
-    RequestVoteResponse(FutureOutput<crate::raft::Result<RequestVoteReply>, NodeId>),
+    RequestVoteResponse(crate::raft::Result<WithNodeId<RequestVoteReply>>),
 }
 
 #[derive(Debug)]

@@ -5,22 +5,21 @@ use crate::raft;
 use crate::raft::handle::Handle;
 use crate::raft::role::{append_entries, request_vote, Role};
 use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply};
-use crate::raft::TermId;
+use crate::raft::{NodeId, TermId};
 use async_trait::async_trait;
 
 use derive_new::new;
 use futures::SinkExt;
+use futures::{FutureExt, TryFutureExt};
 use futures::{Sink, Stream};
+use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
 use std::ops::Range;
 use std::pin::Pin;
-use tokio::sync::mpsc::channel;
-use tokio_util::sync::PollSender;
 
 use crate::raft::message_handler::MessageHandler;
 use tokio::sync::oneshot;
-use tokio_stream::wrappers::ReceiverStream;
 
 pub struct Config {
     pub heartbeat_cycle: u64,
@@ -122,19 +121,17 @@ pub trait PeerEndPoint {
 }
 
 pub trait RequestVoteChannel {
-    type RequestVoteArgsSink<'a>: Sink<RequestVoteArgs, Error = raft::Error> + 'a
+    type RequestVoteArgsSink<'a, S>: Sink<WithNodeId<RequestVoteArgs>, Error = raft::Error> + 'a
     where
-        Self: 'a;
-    type RequestVoteReplyStream<'a>: Stream<Item = RequestVoteReply> + 'a
-    where
-        Self: 'a;
+        Self: 'a,
+        S: Sink<raft::Result<WithNodeId<RequestVoteReply>>, Error = raft::Error> + Clone + 'a;
+    // type RequestVoteReplyStream<'a>: Stream<Item = WithNodeId<RequestVoteReply>> + 'a
+    // where
+    //     Self: 'a;
 
-    fn request_vote_channel(
-        &self,
-    ) -> (
-        Self::RequestVoteArgsSink<'_>,
-        Self::RequestVoteReplyStream<'_>,
-    );
+    fn register_request_vote_sink<'a, S>(&'a self, sink: S) -> Self::RequestVoteArgsSink<'a, S>
+    where
+        S: Sink<raft::Result<WithNodeId<RequestVoteReply>>, Error = raft::Error> + Clone + 'a;
 }
 
 pub trait AppendEntriesChannel {
@@ -189,20 +186,30 @@ impl PeerEndPoint for RaftClient {
     }
 }
 
-impl<T> RequestVoteChannel for T where T: PeerEndPoint {
-    type RequestVoteArgsSink<'a> = impl Sink<RequestVoteArgs, Error = raft::Error> + 'a where Self: 'a;
-    type RequestVoteReplyStream<'a> = impl Stream<Item = RequestVoteReply> + 'a where Self: 'a;
+impl<T: ?Sized> RequestVoteChannel for T
+where
+    T: PeerEndPoint,
+{
+    type RequestVoteArgsSink<'a, S> = impl Sink<WithNodeId<RequestVoteArgs>, Error = raft::Error> + 'a
+        where
+            Self: 'a,
+            S: Sink<raft::Result<WithNodeId<RequestVoteReply>>, Error=raft::Error> + Clone + 'a;
+    // type RequestVoteReplyStream<'a> = impl Stream<Item = WithNodeId<RequestVoteReply>> + 'a where Self: 'a;
 
-    fn request_vote_channel(
-        &self,
-    ) -> (
-        Self::RequestVoteArgsSink<'_>,
-        Self::RequestVoteReplyStream<'_>,
-    ) {
-        let (sender, receiver) = channel(100);
-        let stream = ReceiverStream::new(receiver);
-        let sink = PollSender::new(sender)
-            .with(move |args: RequestVoteArgs| PeerEndPoint::request_vote(self, args));
-        (sink, stream)
+    fn register_request_vote_sink<'a, S>(&'a self, sink: S) -> Self::RequestVoteArgsSink<'a, S>
+    where
+        S: Sink<raft::Result<WithNodeId<RequestVoteReply>>, Error = raft::Error> + Clone + 'a,
+    {
+        sink.with(move |WithNodeId { payload, node_id }| {
+            PeerEndPoint::request_vote(self, payload)
+                .map(move |r| Ok::<_, raft::Error>(r.map(|r| WithNodeId::new(r, node_id))))
+        })
+        .sink_map_err(Into::into)
     }
+}
+
+#[derive(Debug, Serialize, Deserialize, new)]
+pub struct WithNodeId<T> {
+    pub payload: T,
+    pub node_id: NodeId,
 }
