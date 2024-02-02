@@ -263,7 +263,7 @@ fn on_receive_append_entries_reply(
         Greater => UpdateTermAndTransitToFollower(reply.term),
         Less => Retry {
             follower_id,
-            new_next_index: context.old_next_index,
+            new_next_index: old_next_index,
         },
         Equal => match reply.result {
             Success { match_length } => Commit {
