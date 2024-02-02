@@ -106,24 +106,11 @@ impl Leader {
                         .await;
                 }
                 Message::AppendEntriesResponse(result) => match result {
-                    Ok((
-                        reply,
-                        AppendEntriesContext {
-                            follower_id,
-                            old_next_index,
-                        },
-                    )) => {
-                        let _span = trace_span!(
-                            "append entries receive reply",
-                            follower_id,
-                            old_next_index
-                        )
-                        .entered();
+                    Ok(reply) => {
+                        let _span = trace_span!("append entries receive reply", ?reply,).entered();
                         let result = on_receive_append_entries_reply(
                             &handle.logs,
-                            old_next_index,
                             reply,
-                            follower_id,
                             handle.election.current_term(),
                         );
                         let control_flow = self
@@ -262,19 +249,21 @@ enum LoopResult {
 #[instrument(skip_all, ret, level = "trace")]
 fn on_receive_append_entries_reply(
     logs: &Logs,
-    old_next_index: usize,
-    reply: AppendEntriesReply,
-    follower_id: NodeId,
+    (reply, context): (AppendEntriesReply, AppendEntriesContext),
     current_term: TermId,
 ) -> AppendEntriesResult {
-    trace!(%old_next_index, follower_id, current_term);
+    trace!(?context, current_term);
     trace!(?reply);
     trace!(?logs);
+    let AppendEntriesContext {
+        follower_id,
+        old_next_index,
+    } = context;
     match reply.term.cmp(&current_term) {
         Greater => UpdateTermAndTransitToFollower(reply.term),
         Less => Retry {
             follower_id,
-            new_next_index: old_next_index,
+            new_next_index: context.old_next_index,
         },
         Equal => match reply.result {
             Success { match_length } => Commit {
