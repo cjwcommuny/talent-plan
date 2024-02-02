@@ -24,7 +24,7 @@ use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply, RequestVoteReply};
 use tokio::select;
 use tokio::sync::mpsc::channel;
 use tokio::time::interval;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::wrappers::{IntervalStream, ReceiverStream};
 use tokio_util::sync::PollSender;
 use tracing::{info, instrument, trace, trace_span, warn};
 use crate::raft;
@@ -63,11 +63,11 @@ impl Leader {
     ) -> Role {
         let _span = trace_span!("Leader", node_id = handle.node_id).entered();
         let me = handle.node_id;
-        let mut heartbeat_timer = interval(Duration::from_millis(handle.config.heartbeat_cycle));
+        let mut heartbeat_timer = IntervalStream::new(interval(Duration::from_millis(handle.config.heartbeat_cycle))).map(|_| Message::Heartbeat);
         use LoopResult::{Shutdown, TransitToFollower};
         let peers = &message_handler.peers;
         let loop_result: LoopResult = {
-            let (replies, sinks) = {
+            let (mut replies, sinks) = {
                 let (sender, receiver) = channel(100);
                 let replies = ReceiverStream::new(receiver).map(Message::AppendEntriesResponse);
                 let sink = PollSender::new(sender).sink_map_err(Into::into);
@@ -83,7 +83,7 @@ impl Leader {
                 .collect();
             loop {
                 select! {
-                    _ = heartbeat_timer.tick() => {
+                    _ = heartbeat_timer.next() => {
                         trace!("term={}, send heartbeat", handle.election.current_term());
                         let futures = self.send_append_entries_futures(handle, message_handler, peers, me);
                         rpc_replies.extend(futures)
@@ -233,7 +233,7 @@ impl Leader {
 }
 
 enum Message {
-    Timeout,
+    Heartbeat,
     ServerTask(RemoteTask),
     ClientTask(LocalTask),
     AppendEntriesResponse(crate::raft::Result<WithNodeId<AppendEntriesReply>>),
