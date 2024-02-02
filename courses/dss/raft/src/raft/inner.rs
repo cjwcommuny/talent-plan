@@ -12,7 +12,7 @@ use derive_new::new;
 use futures::SinkExt;
 use futures::{FutureExt, TryFutureExt};
 use futures::{Sink, Stream};
-use serde::{Deserialize, Serialize};
+
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
 use std::ops::Range;
@@ -120,8 +120,14 @@ pub trait PeerEndPoint {
     async fn append_entries(&self, args: AppendEntriesArgs) -> raft::Result<AppendEntriesReply>;
 }
 
+#[derive(Debug, new)]
+pub struct AppendEntriesContext {
+    pub follower_id: NodeId,
+    pub old_next_index: usize,
+}
+
 pub type RequestVote<T> = (T, NodeId);
-pub type AppendEntries<T> = (T, NodeId);
+pub type AppendEntries<T> = (T, AppendEntriesContext);
 
 pub trait ClientChannel {
     type RequestVoteSink<'a, S>: Sink<RequestVote<RequestVoteArgs>, Error = raft::Error> + 'a
@@ -230,10 +236,4 @@ where
         })
         .sink_map_err(Into::into)
     }
-}
-
-#[derive(Debug, Serialize, Deserialize, new)]
-pub struct WithNodeId<T> {
-    pub payload: T,
-    pub node_id: NodeId,
 }

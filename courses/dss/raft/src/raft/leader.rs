@@ -1,11 +1,10 @@
 use crate::raft::inner::{
-    AppendEntries, AppendEntriesFuture, ClientChannel, LocalTask, PeerEndPoint, RemoteTask,
-    WithNodeId,
+    AppendEntries, AppendEntriesContext, ClientChannel, LocalTask, RemoteTask,
 };
 use crate::raft::leader::AppendEntriesResult::{Commit, Retry, UpdateTermAndTransitToFollower};
 use crate::raft::role::Role;
 use crate::raft::{ApplyMsg, NodeId, TermId};
-use futures::{stream::FuturesUnordered, Sink, SinkExt, StreamExt};
+use futures::{Sink, SinkExt, StreamExt};
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::ops::ControlFlow;
 
@@ -14,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use crate::raft::candidate::Candidate;
-use crate::raft::common::{with_context, FutureOutput, FutureWithContext};
+
 use crate::raft::follower::Follower;
 use crate::raft::handle::election::Election;
 use crate::raft::handle::{Handle, Logs};
@@ -71,34 +70,30 @@ impl Leader {
         )))
         .map(|_| Message::Heartbeat);
         use LoopResult::{Shutdown, TransitToFollower};
-        let peers = &message_handler.peers;
         let loop_result: LoopResult = {
-            let (_replies, _sinks) = {
+            let (mut replies, mut sinks) = {
                 let (sender, receiver) = channel(100);
                 let replies = ReceiverStream::new(receiver).map(Message::AppendEntriesResponse);
                 let sink = PollSender::new(sender).sink_map_err(Into::into);
-                let sinks: Vec<_> = message_handler
+                let mut sinks: Vec<_> = message_handler
                     .peers
                     .iter()
                     .map(|peer| peer.register_append_entries_sink(sink.clone()))
                     .collect();
+                self.send_append_entries(&mut sinks, handle, message_handler, me)
+                    .await;
                 (replies, sinks)
             };
-
-            let mut rpc_replies: FuturesUnordered<_> = self
-                .send_append_entries_futures(handle, message_handler, peers, handle.node_id)
-                .collect();
             loop {
                 select! {
                     _ = heartbeat_timer.next() => {
                         trace!("term={}, send heartbeat", handle.election.current_term());
-                        let futures = self.send_append_entries_futures(handle, message_handler, peers, me);
-                        rpc_replies.extend(futures)
+                        self.send_append_entries(&mut sinks, handle, message_handler, me).await;
                     }
-                    Some(FutureOutput { output: result, context: ReplyContext { follower_id, old_next_index }}) = rpc_replies.next() => {
-                        let _span = trace_span!("append entries receive reply", follower_id, old_next_index).entered();
+                    Some(Message::AppendEntriesResponse(result)) = replies.next() => {
                         match result {
-                            Ok(reply) => {
+                            Ok((reply, AppendEntriesContext { follower_id, old_next_index })) => {
+                                let _span = trace_span!("append entries receive reply", follower_id, old_next_index).entered();
                                 let result = on_receive_append_entries_reply(
                                     &handle.logs,
                                     old_next_index,
@@ -109,8 +104,7 @@ impl Leader {
                                 let control_flow = self.on_receive_append_entries_result(
                                     result,
                                     handle,
-                                    &message_handler.peers,
-                                    &mut rpc_replies,
+                                    &mut sinks,
                                     message_handler.majority_threshold(),
                                 ).await;
                                 if let ControlFlow::Break(loop_result) = control_flow {
@@ -129,8 +123,7 @@ impl Leader {
                                 let index = handle.add_log(LogKind::Command, data, current_term);
                                 self.match_length[me] = index + 1;
                                 sender.send(Some((index as u64, current_term))).unwrap();
-                                let futures = self.send_append_entries_futures(handle, message_handler, peers, me);
-                                rpc_replies.extend(futures);
+                                self.send_append_entries(&mut sinks, handle, message_handler, me).await;
                             }
                             LocalTask::GetTerm(sender) => sender.send(handle.election.current_term()).unwrap(),
                             LocalTask::CheckLeader(sender) => sender.send(true).unwrap(),
@@ -160,23 +153,6 @@ impl Leader {
         }
     }
 
-    fn send_append_entries_futures<'peer: 'iter, 'iter>(
-        &'iter self,
-        handle: &'iter Handle,
-        message_handler: &'iter MessageHandler,
-        peers: &'peer [Box<dyn PeerEndPoint + Send>],
-        me: NodeId,
-    ) -> impl Iterator<Item = FutureWithContext<AppendEntriesFuture<'peer>, ReplyContext>> + 'iter
-    {
-        message_handler.node_ids_except(me).map(move |peer_id| {
-            let next_index = self.next_index[peer_id];
-            let args = build_append_entries_args(me, &handle.election, &handle.logs, next_index);
-            let future: AppendEntriesFuture = peers[peer_id].append_entries(args);
-            let context = ReplyContext::new(peer_id, next_index);
-            with_context(future, context)
-        })
-    }
-
     async fn send_append_entries<S>(
         &self,
         sinks: &mut [S],
@@ -184,28 +160,28 @@ impl Leader {
         message_handler: &MessageHandler,
         me: NodeId,
     ) where
-        S: Sink<WithNodeId<AppendEntriesArgs>, Error = raft::Error> + Unpin,
+        S: Sink<AppendEntries<AppendEntriesArgs>, Error = raft::Error> + Unpin,
     {
         for peer_id in message_handler.node_ids_except(me) {
             let next_index = self.next_index[peer_id];
             let args = build_append_entries_args(me, &handle.election, &handle.logs, next_index);
             sinks[peer_id]
-                .send(WithNodeId::new(args, peer_id))
+                .send((args, AppendEntriesContext::new(peer_id, next_index)))
                 .await
                 .unwrap();
         }
     }
 
-    async fn on_receive_append_entries_result<'a, 'peer>(
+    async fn on_receive_append_entries_result<'a, 'peer, S>(
         &'a mut self,
         result: AppendEntriesResult,
         handle: &'a mut Handle,
-        peers: &'peer [Box<dyn PeerEndPoint + Send>],
-        rpc_replies: &'a mut FuturesUnordered<
-            FutureWithContext<AppendEntriesFuture<'peer>, ReplyContext>,
-        >,
+        sinks: &'a mut [S],
         commit_threshold: usize,
-    ) -> ControlFlow<LoopResult, ()> {
+    ) -> ControlFlow<LoopResult, ()>
+    where
+        S: Sink<AppendEntries<AppendEntriesArgs>, Error = raft::Error> + Unpin,
+    {
         use ControlFlow::{Break, Continue};
         match result {
             Commit {
@@ -230,9 +206,8 @@ impl Leader {
                     &handle.logs,
                     new_next_index,
                 );
-                let future = peers[follower_id].append_entries(args);
-                let context = ReplyContext::new(follower_id, new_next_index);
-                rpc_replies.push(with_context(future, context));
+                let context = AppendEntriesContext::new(follower_id, new_next_index);
+                sinks[follower_id].send((args, context)).await.unwrap();
                 Continue(())
             }
             UpdateTermAndTransitToFollower(new_term) => {
@@ -311,20 +286,6 @@ fn on_receive_append_entries_reply(
                 )
             }
         },
-    }
-}
-
-struct ReplyContext {
-    follower_id: NodeId,
-    old_next_index: usize,
-}
-
-impl ReplyContext {
-    fn new(follower_id: NodeId, old_next_index: usize) -> Self {
-        Self {
-            follower_id,
-            old_next_index,
-        }
     }
 }
 
