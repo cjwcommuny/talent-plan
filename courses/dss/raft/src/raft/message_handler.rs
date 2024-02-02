@@ -8,7 +8,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 #[derive(new)]
 pub struct MessageHandler {
-    pub peers: Vec<Box<dyn PeerEndPoint + Send>>, // RPC end points of all peers
+    pub peers: Peers, // RPC end points of all peers
     pub remote_tasks: ReceiverStream<RemoteTask>,
     pub local_tasks: ReceiverStream<LocalTask>,
 }
@@ -23,8 +23,28 @@ impl MessageHandler {
     pub fn node_ids_except(&self, me: NodeId) -> impl Iterator<Item = NodeId> {
         (0..self.peers.len()).filter(move |node_id| *node_id != me)
     }
+}
+
+#[derive(new)]
+pub struct Peers {
+    pub inner: Vec<Box<dyn PeerEndPoint + Send>>,
+}
+
+impl From<Vec<Box<dyn PeerEndPoint + Send>>> for Peers {
+    fn from(value: Vec<Box<dyn PeerEndPoint + Send>>) -> Self {
+        Self::new(value)
+    }
+}
+
+impl Peers {
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+    pub fn node_ids_except(&self, me: NodeId) -> impl Iterator<Item = NodeId> {
+        (0..self.inner.len()).filter(move |node_id| *node_id != me)
+    }
 
     pub fn majority_threshold(&self) -> usize {
-        div_ceil(self.peers.len() + 1, 2)
+        div_ceil(self.inner.len() + 1, 2)
     }
 }

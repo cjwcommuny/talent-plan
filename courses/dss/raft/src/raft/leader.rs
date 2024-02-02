@@ -9,6 +9,7 @@ use std::cmp::Ordering::{Equal, Greater, Less};
 use std::ops::ControlFlow;
 
 use derive_new::new;
+use futures_concurrency::stream::Merge;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -19,12 +20,12 @@ use crate::raft::handle::election::Election;
 use crate::raft::handle::{Handle, Logs};
 
 use crate::raft;
-use crate::raft::message_handler::MessageHandler;
+use crate::raft::message_handler::{MessageHandler, Peers};
 use crate::raft::rpc::AppendEntriesReplyResult::{
     LogNotContainThisEntry, LogNotMatch, Success, TermCheckFail,
 };
 use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply};
-use tokio::select;
+
 use tokio::sync::mpsc::channel;
 use tokio::time::interval;
 use tokio_stream::wrappers::{IntervalStream, ReceiverStream};
@@ -65,83 +66,109 @@ impl Leader {
     ) -> Role {
         let _span = trace_span!("Leader", node_id = handle.node_id).entered();
         let me = handle.node_id;
-        let mut heartbeat_timer = IntervalStream::new(interval(Duration::from_millis(
+        let heartbeat_timer = IntervalStream::new(interval(Duration::from_millis(
             handle.config.heartbeat_cycle,
         )))
         .map(|_| Message::Heartbeat);
+        let client_tasks = message_handler
+            .local_tasks
+            .by_ref()
+            .map(Message::ClientTask);
+        let server_tasks = message_handler
+            .remote_tasks
+            .by_ref()
+            .map(Message::ServerTask);
+        let (replies, mut sinks) = {
+            let (sender, receiver) = channel(100);
+            let replies = ReceiverStream::new(receiver).map(Message::AppendEntriesResponse);
+            let sink = PollSender::new(sender).sink_map_err(Into::into);
+            let mut sinks: Vec<_> = message_handler
+                .peers
+                .inner
+                .iter()
+                .map(|peer| peer.register_append_entries_sink(sink.clone()))
+                .collect();
+            self.send_append_entries(&mut sinks, handle, &message_handler.peers, me)
+                .await;
+            (replies, sinks)
+        };
+        let messages = (heartbeat_timer, client_tasks, server_tasks, replies).merge();
+        futures::pin_mut!(messages);
         use LoopResult::{Shutdown, TransitToFollower};
-        let loop_result: LoopResult = {
-            let (mut replies, mut sinks) = {
-                let (sender, receiver) = channel(100);
-                let replies = ReceiverStream::new(receiver).map(Message::AppendEntriesResponse);
-                let sink = PollSender::new(sender).sink_map_err(Into::into);
-                let mut sinks: Vec<_> = message_handler
-                    .peers
-                    .iter()
-                    .map(|peer| peer.register_append_entries_sink(sink.clone()))
-                    .collect();
-                self.send_append_entries(&mut sinks, handle, message_handler, me)
-                    .await;
-                (replies, sinks)
+        let loop_result: LoopResult = loop {
+            let Some(message) = messages.next().await else {
+                continue;
             };
-            loop {
-                select! {
-                    _ = heartbeat_timer.next() => {
-                        trace!("term={}, send heartbeat", handle.election.current_term());
-                        self.send_append_entries(&mut sinks, handle, message_handler, me).await;
-                    }
-                    Some(Message::AppendEntriesResponse(result)) = replies.next() => {
-                        match result {
-                            Ok((reply, AppendEntriesContext { follower_id, old_next_index })) => {
-                                let _span = trace_span!("append entries receive reply", follower_id, old_next_index).entered();
-                                let result = on_receive_append_entries_reply(
-                                    &handle.logs,
-                                    old_next_index,
-                                    reply,
-                                    follower_id,
-                                    handle.election.current_term()
-                                );
-                                let control_flow = self.on_receive_append_entries_result(
-                                    result,
-                                    handle,
-                                    &mut sinks,
-                                    message_handler.majority_threshold(),
-                                ).await;
-                                if let ControlFlow::Break(loop_result) = control_flow {
-                                    break loop_result;
-                                }
-                            }
-                            Err(e) => warn!(%e, "rpc error"),
+            match message {
+                Message::Heartbeat => {
+                    trace!("term={}, send heartbeat", handle.election.current_term());
+                    self.send_append_entries(&mut sinks, handle, &message_handler.peers, me)
+                        .await;
+                }
+                Message::AppendEntriesResponse(result) => match result {
+                    Ok((
+                        reply,
+                        AppendEntriesContext {
+                            follower_id,
+                            old_next_index,
+                        },
+                    )) => {
+                        let _span = trace_span!(
+                            "append entries receive reply",
+                            follower_id,
+                            old_next_index
+                        )
+                        .entered();
+                        let result = on_receive_append_entries_reply(
+                            &handle.logs,
+                            old_next_index,
+                            reply,
+                            follower_id,
+                            handle.election.current_term(),
+                        );
+                        let control_flow = self
+                            .on_receive_append_entries_result(
+                                result,
+                                handle,
+                                &mut sinks,
+                                message_handler.peers.majority_threshold(),
+                            )
+                            .await;
+                        if let ControlFlow::Break(loop_result) = control_flow {
+                            break loop_result;
                         }
                     }
-                    Some(task) = message_handler.local_tasks.next() => {
-                        match task {
-                            LocalTask::AppendEntries { data, sender } => {
-                                // trace!("term={}, local task append entries", handle.election.current_term());
-                                let me = handle.node_id;
-                                let current_term = handle.election.current_term();
-                                let index = handle.add_log(LogKind::Command, data, current_term);
-                                self.match_length[me] = index + 1;
-                                sender.send(Some((index as u64, current_term))).unwrap();
-                                self.send_append_entries(&mut sinks, handle, message_handler, me).await;
-                            }
-                            LocalTask::GetTerm(sender) => sender.send(handle.election.current_term()).unwrap(),
-                            LocalTask::CheckLeader(sender) => sender.send(true).unwrap(),
-                            LocalTask::Shutdown(sender) => {
-                                sender.send(()).unwrap();
-                                break Shutdown;
-                            }
-                        }
+                    Err(e) => warn!(%e, "rpc error"),
+                },
+                Message::ClientTask(task) => match task {
+                    LocalTask::AppendEntries { data, sender } => {
+                        // trace!("term={}, local task append entries", handle.election.current_term());
+                        let me = handle.node_id;
+                        let current_term = handle.election.current_term();
+                        let index = handle.add_log(LogKind::Command, data, current_term);
+                        self.match_length[me] = index + 1;
+                        sender.send(Some((index as u64, current_term))).unwrap();
+                        self.send_append_entries(&mut sinks, handle, &message_handler.peers, me)
+                            .await;
                     }
-                    Some(task) = message_handler.remote_tasks.next() => {
-                        trace!("handle remote task");
-                        if task.handle(handle).await.transit_to_follower {
-                            break TransitToFollower;
-                        }
+                    LocalTask::GetTerm(sender) => {
+                        sender.send(handle.election.current_term()).unwrap()
+                    }
+                    LocalTask::CheckLeader(sender) => sender.send(true).unwrap(),
+                    LocalTask::Shutdown(sender) => {
+                        sender.send(()).unwrap();
+                        break Shutdown;
+                    }
+                },
+                Message::ServerTask(task) => {
+                    trace!("handle remote task");
+                    if task.handle(handle).await.transit_to_follower {
+                        break TransitToFollower;
                     }
                 }
             }
         };
+
         info!(
             "term={}, loop_result={:?}",
             handle.election.current_term(),
@@ -157,12 +184,12 @@ impl Leader {
         &self,
         sinks: &mut [S],
         handle: &Handle,
-        message_handler: &MessageHandler,
+        peers: &Peers,
         me: NodeId,
     ) where
         S: Sink<AppendEntries<AppendEntriesArgs>, Error = raft::Error> + Unpin,
     {
-        for peer_id in message_handler.node_ids_except(me) {
+        for peer_id in peers.node_ids_except(me) {
             let next_index = self.next_index[peer_id];
             let args = build_append_entries_args(me, &handle.election, &handle.logs, next_index);
             sinks[peer_id]

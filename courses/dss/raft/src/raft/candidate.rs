@@ -47,8 +47,8 @@ impl Candidate {
             candidate_id: handle.node_id,
         };
         let peers = &message_handler.peers;
-        let node_ids = message_handler.node_ids_except(me);
-        let majority_threshold = message_handler.majority_threshold();
+        let node_ids = message_handler.peers.node_ids_except(me);
+        let majority_threshold = message_handler.peers.majority_threshold();
 
         let election_timeout = stream::once(sleep(Duration::from_millis(
             handle
@@ -73,7 +73,7 @@ impl Candidate {
                     "term={}, send vote requests",
                     handle.election.current_term()
                 );
-                peers[peer_id]
+                peers.inner[peer_id]
                     .register_request_vote_sink(sink.clone())
                     .send((args.clone(), peer_id))
                     .await

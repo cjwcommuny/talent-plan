@@ -140,7 +140,8 @@ impl Raft {
             peers
                 .into_iter()
                 .map(|client| Box::new(client) as _)
-                .collect(),
+                .collect::<Vec<_>>()
+                .into(),
             remote_task_receiver.into(),
             local_task_receiver.into(),
         );

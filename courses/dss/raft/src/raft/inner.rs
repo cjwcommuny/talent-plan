@@ -14,9 +14,8 @@ use futures::{FutureExt, TryFutureExt};
 use futures::{Sink, Stream};
 
 use std::fmt::{Debug, Formatter};
-use std::future::Future;
+
 use std::ops::Range;
-use std::pin::Pin;
 
 use crate::raft::message_handler::MessageHandler;
 use tokio::sync::oneshot;
@@ -157,9 +156,6 @@ pub trait AppendEntriesChannel {
         &self,
     ) -> (Self::AppendEntriesArgsSink, Self::AppendEntriesReplyStream);
 }
-
-pub type AppendEntriesFuture<'a> =
-    Pin<Box<dyn Future<Output = raft::Result<AppendEntriesReply>> + Send + 'a>>;
 
 #[async_trait]
 impl<T> PeerEndPoint for Box<T>

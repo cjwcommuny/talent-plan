@@ -1,4 +1,3 @@
-use derive_new::new;
 use futures::FutureExt;
 use std::future::Future;
 use std::ops::Deref;
@@ -47,18 +46,4 @@ where
     F: Future,
 {
     future.await
-}
-
-#[derive(Debug, new)]
-pub struct FutureOutput<Output, Context> {
-    pub output: Output,
-    pub context: Context,
-}
-
-pub type FutureWithContext<F: Future, C> = impl Future<Output = FutureOutput<F::Output, C>>;
-pub fn with_context<F, C>(future: F, context: C) -> FutureWithContext<F, C>
-where
-    F: Future,
-{
-    future.map(|output| FutureOutput::new(output, context))
 }
