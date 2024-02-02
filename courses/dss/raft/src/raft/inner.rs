@@ -120,24 +120,27 @@ pub trait PeerEndPoint {
     async fn append_entries(&self, args: AppendEntriesArgs) -> raft::Result<AppendEntriesReply>;
 }
 
-pub trait ClientChannel {
-    type RequestVoteSink<'a, S>: Sink<WithNodeId<RequestVoteArgs>, Error = raft::Error> + 'a
-    where
-        Self: 'a,
-        S: Sink<raft::Result<WithNodeId<RequestVoteReply>>, Error = raft::Error> + 'a;
+pub type RequestVote<T> = (T, NodeId);
+pub type AppendEntries<T> = (T, NodeId);
 
-    type AppendEntriesSink<'a, S>: Sink<WithNodeId<AppendEntriesArgs>, Error = raft::Error> + 'a
+pub trait ClientChannel {
+    type RequestVoteSink<'a, S>: Sink<RequestVote<RequestVoteArgs>, Error = raft::Error> + 'a
     where
         Self: 'a,
-        S: Sink<raft::Result<WithNodeId<AppendEntriesReply>>, Error = raft::Error> + 'a;
+        S: Sink<raft::Result<RequestVote<RequestVoteReply>>, Error = raft::Error> + 'a;
+
+    type AppendEntriesSink<'a, S>: Sink<AppendEntries<AppendEntriesArgs>, Error = raft::Error> + 'a
+    where
+        Self: 'a,
+        S: Sink<raft::Result<AppendEntries<AppendEntriesReply>>, Error = raft::Error> + 'a;
 
     fn register_request_vote_sink<'a, S>(&'a self, sink: S) -> Self::RequestVoteSink<'a, S>
     where
-        S: Sink<raft::Result<WithNodeId<RequestVoteReply>>, Error = raft::Error> + 'a;
+        S: Sink<raft::Result<RequestVote<RequestVoteReply>>, Error = raft::Error> + 'a;
 
     fn register_append_entries_sink<'a, S>(&'a self, sink: S) -> Self::AppendEntriesSink<'a, S>
     where
-        S: Sink<raft::Result<WithNodeId<AppendEntriesReply>>, Error = raft::Error> + 'a;
+        S: Sink<raft::Result<AppendEntries<AppendEntriesReply>>, Error = raft::Error> + 'a;
 }
 
 pub trait AppendEntriesChannel {
@@ -196,34 +199,34 @@ impl<T: ?Sized> ClientChannel for T
 where
     T: PeerEndPoint,
 {
-    type RequestVoteSink<'a, S> = impl Sink<WithNodeId<RequestVoteArgs>, Error = raft::Error> + 'a
+    type RequestVoteSink<'a, S> = impl Sink<RequestVote<RequestVoteArgs>, Error = raft::Error> + 'a
         where
             Self: 'a,
-            S: Sink<raft::Result<WithNodeId<RequestVoteReply>>, Error = raft::Error> + 'a;
+            S: Sink<raft::Result<RequestVote<RequestVoteReply>>, Error = raft::Error> + 'a;
 
-    type AppendEntriesSink<'a, S> = impl Sink<WithNodeId<AppendEntriesArgs>, Error = raft::Error> + 'a
+    type AppendEntriesSink<'a, S> = impl Sink<AppendEntries<AppendEntriesArgs>, Error = raft::Error> + 'a
         where
             Self: 'a,
-            S: Sink<raft::Result<WithNodeId<AppendEntriesReply>>, Error = raft::Error> + 'a;
+            S: Sink<raft::Result<AppendEntries<AppendEntriesReply>>, Error = raft::Error> + 'a;
 
     fn register_request_vote_sink<'a, S>(&'a self, sink: S) -> Self::RequestVoteSink<'a, S>
     where
-        S: Sink<raft::Result<WithNodeId<RequestVoteReply>>, Error = raft::Error> + 'a,
+        S: Sink<raft::Result<RequestVote<RequestVoteReply>>, Error = raft::Error> + 'a,
     {
-        sink.with(move |WithNodeId { payload, node_id }| {
+        sink.with(move |(payload, node_id)| {
             PeerEndPoint::request_vote(self, payload)
-                .map(move |r| Ok::<_, raft::Error>(r.map(|r| WithNodeId::new(r, node_id))))
+                .map(move |r| Ok::<_, raft::Error>(r.map(|r| (r, node_id))))
         })
         .sink_map_err(Into::into)
     }
 
     fn register_append_entries_sink<'a, S>(&'a self, sink: S) -> Self::AppendEntriesSink<'a, S>
     where
-        S: Sink<raft::Result<WithNodeId<AppendEntriesReply>>, Error = raft::Error> + 'a,
+        S: Sink<raft::Result<AppendEntries<AppendEntriesReply>>, Error = raft::Error> + 'a,
     {
-        sink.with(move |WithNodeId { payload, node_id }| {
+        sink.with(move |(payload, node_id)| {
             PeerEndPoint::append_entries(self, payload)
-                .map(move |r| Ok::<_, raft::Error>(r.map(|r| WithNodeId::new(r, node_id))))
+                .map(move |r| Ok::<_, raft::Error>(r.map(|r| (r, node_id))))
         })
         .sink_map_err(Into::into)
     }

@@ -1,5 +1,5 @@
-use crate::raft::inner::{ClientChannel, RemoteTaskResult};
-use crate::raft::inner::{LocalTask, RemoteTask, WithNodeId};
+use crate::raft::inner::{ClientChannel, RemoteTaskResult, RequestVote};
+use crate::raft::inner::{LocalTask, RemoteTask};
 use crate::raft::leader::Leader;
 use crate::raft::role::Role;
 use futures::{stream, SinkExt, StreamExt};
@@ -75,7 +75,7 @@ impl Candidate {
                 );
                 peers[peer_id]
                     .register_request_vote_sink(sink.clone())
-                    .send(WithNodeId::new(args.clone(), peer_id))
+                    .send((args.clone(), peer_id))
                     .await
                     .unwrap();
             }
@@ -117,10 +117,7 @@ impl Candidate {
                     Message::RequestVoteResponse(reply_result) => {
                         let current_term = handle.election.current_term();
                         match reply_result {
-                            Ok(WithNodeId {
-                                payload: reply,
-                                node_id: peer_id,
-                            }) => {
+                            Ok((reply, peer_id)) => {
                                 if reply.term == current_term && reply.vote_granted {
                                     trace!("receive vote granted from {peer_id}");
                                     votes_received.insert(peer_id);
@@ -163,7 +160,7 @@ enum Message {
     Timeout,
     ServerTask(RemoteTask),
     ClientTask(LocalTask),
-    RequestVoteResponse(crate::raft::Result<WithNodeId<RequestVoteReply>>),
+    RequestVoteResponse(crate::raft::Result<RequestVote<RequestVoteReply>>),
 }
 
 #[derive(Debug)]

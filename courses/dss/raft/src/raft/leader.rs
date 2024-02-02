@@ -1,8 +1,11 @@
-use crate::raft::inner::{AppendEntriesFuture, ClientChannel, LocalTask, PeerEndPoint, RemoteTask, WithNodeId};
+use crate::raft::inner::{
+    AppendEntries, AppendEntriesFuture, ClientChannel, LocalTask, PeerEndPoint, RemoteTask,
+    WithNodeId,
+};
 use crate::raft::leader::AppendEntriesResult::{Commit, Retry, UpdateTermAndTransitToFollower};
 use crate::raft::role::Role;
 use crate::raft::{ApplyMsg, NodeId, TermId};
-use futures::{pin_mut, Sink, SinkExt, stream::FuturesUnordered, StreamExt};
+use futures::{stream::FuturesUnordered, Sink, SinkExt, StreamExt};
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::ops::ControlFlow;
 
@@ -16,18 +19,18 @@ use crate::raft::follower::Follower;
 use crate::raft::handle::election::Election;
 use crate::raft::handle::{Handle, Logs};
 
+use crate::raft;
 use crate::raft::message_handler::MessageHandler;
 use crate::raft::rpc::AppendEntriesReplyResult::{
     LogNotContainThisEntry, LogNotMatch, Success, TermCheckFail,
 };
-use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply, RequestVoteReply};
+use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply};
 use tokio::select;
 use tokio::sync::mpsc::channel;
 use tokio::time::interval;
 use tokio_stream::wrappers::{IntervalStream, ReceiverStream};
 use tokio_util::sync::PollSender;
 use tracing::{info, instrument, trace, trace_span, warn};
-use crate::raft;
 
 /// inner structure for `ApplyMsg`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,20 +66,24 @@ impl Leader {
     ) -> Role {
         let _span = trace_span!("Leader", node_id = handle.node_id).entered();
         let me = handle.node_id;
-        let mut heartbeat_timer = IntervalStream::new(interval(Duration::from_millis(handle.config.heartbeat_cycle))).map(|_| Message::Heartbeat);
+        let mut heartbeat_timer = IntervalStream::new(interval(Duration::from_millis(
+            handle.config.heartbeat_cycle,
+        )))
+        .map(|_| Message::Heartbeat);
         use LoopResult::{Shutdown, TransitToFollower};
         let peers = &message_handler.peers;
         let loop_result: LoopResult = {
-            let (mut replies, sinks) = {
+            let (_replies, _sinks) = {
                 let (sender, receiver) = channel(100);
                 let replies = ReceiverStream::new(receiver).map(Message::AppendEntriesResponse);
                 let sink = PollSender::new(sender).sink_map_err(Into::into);
-                let sinks: Vec<_> = message_handler.peers.iter().map(|peer| {
-                        peer.register_append_entries_sink(sink.clone())
-                }).collect();
+                let sinks: Vec<_> = message_handler
+                    .peers
+                    .iter()
+                    .map(|peer| peer.register_append_entries_sink(sink.clone()))
+                    .collect();
                 (replies, sinks)
             };
-
 
             let mut rpc_replies: FuturesUnordered<_> = self
                 .send_append_entries_futures(handle, message_handler, peers, handle.node_id)
@@ -176,11 +183,16 @@ impl Leader {
         handle: &Handle,
         message_handler: &MessageHandler,
         me: NodeId,
-    ) where S: Sink<WithNodeId<AppendEntriesArgs>, Error = raft::Error> + Unpin {
+    ) where
+        S: Sink<WithNodeId<AppendEntriesArgs>, Error = raft::Error> + Unpin,
+    {
         for peer_id in message_handler.node_ids_except(me) {
             let next_index = self.next_index[peer_id];
             let args = build_append_entries_args(me, &handle.election, &handle.logs, next_index);
-            sinks[peer_id].send(WithNodeId::new(args, peer_id)).await.unwrap();
+            sinks[peer_id]
+                .send(WithNodeId::new(args, peer_id))
+                .await
+                .unwrap();
         }
     }
 
@@ -236,7 +248,7 @@ enum Message {
     Heartbeat,
     ServerTask(RemoteTask),
     ClientTask(LocalTask),
-    AppendEntriesResponse(crate::raft::Result<WithNodeId<AppendEntriesReply>>),
+    AppendEntriesResponse(crate::raft::Result<AppendEntries<AppendEntriesReply>>),
 }
 
 #[derive(Debug)]
