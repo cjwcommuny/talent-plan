@@ -1158,6 +1158,7 @@ dependencies = [
  "prost-build",
  "prost-derive",
  "rand 0.8.5",
+ "sender-sink",
  "serde",
  "serde_json",
  "tokio",
@@ -1383,6 +1384,16 @@ name = "semver"
 version = "1.0.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "58bc9567378fc7690d6b2addae4e60ac2eeea07becb2c64b9f218b53865cba2a"
+
+[[package]]
+name = "sender-sink"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa84fb38012aeecea16454e88aea3f2d36cf358a702e3116448213b2e13f2181"
+dependencies = [
+ "futures",
+ "tokio",
+]
 
 [[package]]
 name = "serde"

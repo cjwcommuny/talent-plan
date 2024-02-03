@@ -26,10 +26,11 @@ use crate::raft::rpc::AppendEntriesReplyResult::{
 };
 use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply};
 
-use tokio::sync::mpsc::channel;
+use tokio::sync::mpsc::unbounded_channel;
 use tokio::time::interval;
-use tokio_stream::wrappers::{IntervalStream, ReceiverStream};
-use tokio_util::sync::PollSender;
+use tokio_stream::wrappers::{IntervalStream, UnboundedReceiverStream};
+
+use crate::raft::sink::UnboundedSenderSink;
 use tracing::{info, instrument, trace, trace_span, warn};
 
 /// inner structure for `ApplyMsg`
@@ -79,9 +80,10 @@ impl Leader {
             .by_ref()
             .map(Message::ServerTask);
         let (replies, mut sinks) = {
-            let (sender, receiver) = channel(100);
-            let replies = ReceiverStream::new(receiver).map(Message::AppendEntriesResponse);
-            let sink = PollSender::new(sender).sink_map_err(Into::into);
+            let (sender, receiver) = unbounded_channel();
+            let replies =
+                UnboundedReceiverStream::new(receiver).map(Message::AppendEntriesResponse);
+            let sink = UnboundedSenderSink::from(sender).sink_map_err(Into::into);
             let mut sinks: Vec<_> = message_handler
                 .peers
                 .inner

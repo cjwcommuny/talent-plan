@@ -1,5 +1,6 @@
 use std::{error, fmt, result};
-use tokio_util::sync::PollSendError;
+
+use crate::raft::sink::SinkError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -28,8 +29,8 @@ impl error::Error for Error {
     }
 }
 
-impl<T> From<PollSendError<T>> for Error {
-    fn from(_value: PollSendError<T>) -> Self {
+impl From<SinkError> for Error {
+    fn from(_value: SinkError) -> Self {
         Self::PollSendError
     }
 }

@@ -15,10 +15,11 @@ use futures_concurrency::stream::Merge;
 use rand::Rng;
 use std::time::Duration;
 
-use tokio::sync::mpsc::channel;
+use tokio::sync::mpsc::unbounded_channel;
 use tokio::time::sleep;
-use tokio_stream::wrappers::ReceiverStream;
-use tokio_util::sync::PollSender;
+use tokio_stream::wrappers::UnboundedReceiverStream;
+
+use crate::raft::sink::UnboundedSenderSink;
 use tracing::{info, trace, trace_span, warn};
 
 /// make the constructor private
@@ -66,8 +67,8 @@ impl Candidate {
             .map(Message::ServerTask);
 
         let replies = {
-            let (sender, receiver) = channel(100);
-            let sink = PollSender::new(sender).sink_map_err(Into::into);
+            let (sender, receiver) = unbounded_channel();
+            let sink = UnboundedSenderSink::from(sender).sink_map_err(Into::into);
             for peer_id in node_ids {
                 trace!(
                     "term={}, send vote requests",
@@ -79,7 +80,7 @@ impl Candidate {
                     .await
                     .unwrap();
             }
-            ReceiverStream::new(receiver).map(Message::RequestVoteResponse)
+            UnboundedReceiverStream::new(receiver).map(Message::RequestVoteResponse)
         };
 
         let messages = (election_timeout, client_tasks, server_tasks, replies).merge();

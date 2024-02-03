@@ -25,6 +25,7 @@ mod message_handler;
 pub mod persister;
 mod role;
 mod rpc;
+mod sink;
 
 use self::errors::*;
 use self::persister::*;
