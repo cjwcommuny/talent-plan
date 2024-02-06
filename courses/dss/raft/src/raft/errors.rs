@@ -1,5 +1,7 @@
 use std::{error, fmt, result};
 
+use tokio::sync::mpsc::error::SendError;
+
 use crate::raft::sink::SinkError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,6 +33,12 @@ impl error::Error for Error {
 
 impl From<SinkError> for Error {
     fn from(_value: SinkError) -> Self {
+        Self::PollSendError
+    }
+}
+
+impl<T> From<SendError<T>> for Error {
+    fn from(_value: SendError<T>) -> Self {
         Self::PollSendError
     }
 }
