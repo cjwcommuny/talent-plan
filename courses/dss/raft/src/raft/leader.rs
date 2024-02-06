@@ -1,10 +1,8 @@
-use crate::raft::inner::{
-    AppendEntries, AppendEntriesContext, ClientChannel, LocalTask, RemoteTask,
-};
+use crate::raft::inner::{AppendEntries, AppendEntriesContext, LocalTask, RemoteTask};
 use crate::raft::leader::AppendEntriesResult::{Commit, Retry, UpdateTermAndTransitToFollower};
 use crate::raft::role::Role;
 use crate::raft::{ApplyMsg, NodeId, TermId};
-use futures::{Sink, SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt};
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::ops::ControlFlow;
 
@@ -30,7 +28,7 @@ use tokio::sync::mpsc::unbounded_channel;
 use tokio::time::interval;
 use tokio_stream::wrappers::{IntervalStream, UnboundedReceiverStream};
 
-use crate::raft::sink::UnboundedSenderSink;
+use crate::raft::sender::{append_entries_sender, Sender};
 use tracing::{info, instrument, trace, trace_span, warn};
 
 /// inner structure for `ApplyMsg`
@@ -79,20 +77,20 @@ impl Leader {
             .remote_tasks
             .by_ref()
             .map(Message::ServerTask);
-        let (replies, mut sinks) = {
+        let (replies, senders) = {
             let (sender, receiver) = unbounded_channel();
             let replies =
                 UnboundedReceiverStream::new(receiver).map(Message::AppendEntriesResponse);
-            let sink = UnboundedSenderSink::from(sender).sink_map_err(Into::into);
-            let mut sinks: Vec<_> = message_handler
+            let senders: Vec<_> = message_handler
                 .peers
                 .inner
                 .iter()
-                .map(|peer| peer.register_append_entries_sink(sink.clone()))
+                .map(Clone::clone)
+                .map(|peer| append_entries_sender(peer, sender.clone()))
                 .collect();
-            self.send_append_entries(&mut sinks, handle, &message_handler.peers, me)
+            self.send_append_entries(&senders, handle, &message_handler.peers, me)
                 .await;
-            (replies, sinks)
+            (replies, senders)
         };
         let messages = (heartbeat_timer, client_tasks, server_tasks, replies).merge();
         futures::pin_mut!(messages);
@@ -104,22 +102,22 @@ impl Leader {
             match message {
                 Message::Heartbeat => {
                     trace!("term={}, send heartbeat", handle.election.current_term());
-                    self.send_append_entries(&mut sinks, handle, &message_handler.peers, me)
+                    self.send_append_entries(&senders, handle, &message_handler.peers, me)
                         .await;
                 }
-                Message::AppendEntriesResponse(result) => match result {
+                Message::AppendEntriesResponse((result, context)) => match result {
                     Ok(reply) => {
                         let _span = trace_span!("append entries receive reply", ?reply,).entered();
                         let result = on_receive_append_entries_reply(
                             &handle.logs,
-                            reply,
+                            (reply, context),
                             handle.election.current_term(),
                         );
                         let control_flow = self
                             .on_receive_append_entries_result(
                                 result,
                                 handle,
-                                &mut sinks,
+                                &senders,
                                 message_handler.peers.majority_threshold(),
                             )
                             .await;
@@ -137,7 +135,7 @@ impl Leader {
                         let index = handle.add_log(LogKind::Command, data, current_term);
                         self.match_length[me] = index + 1;
                         sender.send(Some((index as u64, current_term))).unwrap();
-                        self.send_append_entries(&mut sinks, handle, &message_handler.peers, me)
+                        self.send_append_entries(&senders, handle, &message_handler.peers, me)
                             .await;
                     }
                     LocalTask::GetTerm(sender) => {
@@ -171,19 +169,18 @@ impl Leader {
 
     async fn send_append_entries<S>(
         &self,
-        sinks: &mut [S],
+        senders: &[S],
         handle: &Handle,
         peers: &Peers,
         me: NodeId,
     ) where
-        S: Sink<AppendEntries<AppendEntriesArgs>, Error = raft::Error> + Unpin,
+        S: Sender<AppendEntries<AppendEntriesArgs>>,
     {
         for peer_id in peers.node_ids_except(me) {
             let next_index = self.next_index[peer_id];
             let args = build_append_entries_args(me, &handle.election, &handle.logs, next_index);
-            sinks[peer_id]
+            senders[peer_id]
                 .send((args, AppendEntriesContext::new(peer_id, next_index)))
-                .await
                 .unwrap();
         }
     }
@@ -192,11 +189,11 @@ impl Leader {
         &'a mut self,
         result: AppendEntriesResult,
         handle: &'a mut Handle,
-        sinks: &'a mut [S],
+        senders: &'a [S],
         commit_threshold: usize,
     ) -> ControlFlow<LoopResult, ()>
     where
-        S: Sink<AppendEntries<AppendEntriesArgs>, Error = raft::Error> + Unpin,
+        S: Sender<AppendEntries<AppendEntriesArgs>>,
     {
         use ControlFlow::{Break, Continue};
         match result {
@@ -223,7 +220,7 @@ impl Leader {
                     new_next_index,
                 );
                 let context = AppendEntriesContext::new(follower_id, new_next_index);
-                sinks[follower_id].send((args, context)).await.unwrap();
+                senders[follower_id].send((args, context)).unwrap();
                 Continue(())
             }
             UpdateTermAndTransitToFollower(new_term) => {
@@ -239,7 +236,7 @@ enum Message {
     Heartbeat,
     ServerTask(RemoteTask),
     ClientTask(LocalTask),
-    AppendEntriesResponse(crate::raft::Result<AppendEntries<AppendEntriesReply>>),
+    AppendEntriesResponse(AppendEntries<raft::Result<AppendEntriesReply>>),
 }
 
 #[derive(Debug)]

@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::fmt::Debug;
 use std::future::Future;
 
@@ -12,7 +13,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub trait Sender<T> {
-    type Error;
+    type Error: Error;
 
     fn send(&self, data: T) -> Result<(), Self::Error>;
 }

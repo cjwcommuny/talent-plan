@@ -1,7 +1,8 @@
-use crate::raft::inner::{ClientChannel, RemoteTaskResult, RequestVote};
 use crate::raft::inner::{LocalTask, RemoteTask};
+use crate::raft::inner::{RemoteTaskResult, RequestVote};
 use crate::raft::leader::Leader;
 use crate::raft::role::Role;
+use crate::raft::sender::Sender;
 use futures::{stream, SinkExt, StreamExt};
 use std::collections::HashSet;
 use std::fmt::Debug;
@@ -19,7 +20,7 @@ use tokio::sync::mpsc::unbounded_channel;
 use tokio::time::sleep;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use crate::raft::sink::UnboundedSenderSink;
+use crate::raft::sender::request_vote_sender;
 use tracing::{info, trace, trace_span, warn};
 
 /// make the constructor private
@@ -68,16 +69,13 @@ impl Candidate {
 
         let replies = {
             let (sender, receiver) = unbounded_channel();
-            let sink = UnboundedSenderSink::from(sender).sink_map_err(Into::into);
             for peer_id in node_ids {
                 trace!(
                     "term={}, send vote requests",
                     handle.election.current_term()
                 );
-                peers.inner[peer_id]
-                    .register_request_vote_sink(sink.clone())
+                request_vote_sender(peers.inner[peer_id].clone(), sender.clone())
                     .send((args.clone(), peer_id))
-                    .await
                     .unwrap();
             }
             UnboundedReceiverStream::new(receiver).map(Message::RequestVoteResponse)
@@ -115,10 +113,10 @@ impl Candidate {
                             break 'collect_vote Shutdown;
                         }
                     },
-                    Message::RequestVoteResponse(reply_result) => {
+                    Message::RequestVoteResponse((reply_result, peer_id)) => {
                         let current_term = handle.election.current_term();
                         match reply_result {
-                            Ok((reply, peer_id)) => {
+                            Ok(reply) => {
                                 if reply.term == current_term && reply.vote_granted {
                                     trace!("receive vote granted from {peer_id}");
                                     votes_received.insert(peer_id);
@@ -161,7 +159,7 @@ enum Message {
     Timeout,
     ServerTask(RemoteTask),
     ClientTask(LocalTask),
-    RequestVoteResponse(crate::raft::Result<RequestVote<RequestVoteReply>>),
+    RequestVoteResponse(RequestVote<crate::raft::Result<RequestVoteReply>>),
 }
 
 #[derive(Debug)]

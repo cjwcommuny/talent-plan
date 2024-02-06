@@ -141,7 +141,7 @@ impl Raft {
         let message_handler = MessageHandler::new(
             peers
                 .into_iter()
-                .map(|client| Box::new(client) as _)
+                .map(|client| Arc::new(client) as _)
                 .collect::<Vec<_>>()
                 .into(),
             remote_task_receiver.into(),

@@ -3,6 +3,7 @@ use crate::raft::NodeId;
 use derive_new::new;
 use num::integer::div_ceil;
 use std::fmt::{Debug, Formatter};
+use std::sync::Arc;
 
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -19,19 +20,13 @@ impl Debug for MessageHandler {
     }
 }
 
-impl MessageHandler {
-    pub fn node_ids_except(&self, me: NodeId) -> impl Iterator<Item = NodeId> {
-        (0..self.peers.len()).filter(move |node_id| *node_id != me)
-    }
-}
-
 #[derive(new)]
 pub struct Peers {
-    pub inner: Vec<Box<dyn PeerEndPoint + Send>>,
+    pub inner: Vec<Arc<dyn PeerEndPoint + Send + Sync>>,
 }
 
-impl From<Vec<Box<dyn PeerEndPoint + Send>>> for Peers {
-    fn from(value: Vec<Box<dyn PeerEndPoint + Send>>) -> Self {
+impl From<Vec<Arc<dyn PeerEndPoint + Send + Sync>>> for Peers {
+    fn from(value: Vec<Arc<dyn PeerEndPoint + Send + Sync>>) -> Self {
         Self::new(value)
     }
 }
