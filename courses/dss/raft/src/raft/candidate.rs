@@ -1,20 +1,26 @@
-use crate::raft::inner::LocalTask;
-use crate::raft::inner::RemoteTaskResult;
+use crate::raft::inner::{LocalTask, RemoteTask};
+use crate::raft::inner::{RemoteTaskResult, RequestVote};
 use crate::raft::leader::Leader;
 use crate::raft::role::Role;
-use futures::{stream, stream::FuturesUnordered, StreamExt};
+use crate::raft::sender::Sender;
+use futures::{stream, SinkExt, StreamExt};
 use std::collections::HashSet;
 use std::fmt::Debug;
 
-use crate::raft::common::{with_context, FutureOutput};
 use crate::raft::follower::Follower;
 use crate::raft::handle::Handle;
 use crate::raft::message_handler::MessageHandler;
-use crate::raft::rpc::RequestVoteArgs;
+use crate::raft::rpc::{RequestVoteArgs, RequestVoteReply};
+
+use futures_concurrency::stream::Merge;
 use rand::Rng;
 use std::time::Duration;
-use tokio::select;
+
+use tokio::sync::mpsc::unbounded_channel;
 use tokio::time::sleep;
+use tokio_stream::wrappers::UnboundedReceiverStream;
+
+use crate::raft::sender::request_vote_sender;
 use tracing::{info, trace, trace_span, warn};
 
 /// make the constructor private
@@ -42,50 +48,72 @@ impl Candidate {
             term: handle.election.current_term(),
             candidate_id: handle.node_id,
         };
+        let peers = &message_handler.peers;
+        let node_ids = message_handler.peers.node_ids_except(me);
+        let majority_threshold = message_handler.peers.majority_threshold();
+
         let election_timeout = stream::once(sleep(Duration::from_millis(
             handle
                 .random_generator
                 .gen_range(handle.config.election_timeout.clone()),
-        )));
-        let mut votes_received = HashSet::from([handle.node_id]);
-        futures::pin_mut!(election_timeout);
-        let majority_threshold = message_handler.majority_threshold();
-        use LoopResult::{Elected, RestartAsCandidate, Shutdown, TransitToFollower};
-        let peers = &message_handler.peers;
-        let vote_result = 'collect_vote: {
-            let mut replies: FuturesUnordered<_> = {
+        )))
+        .map(|_| Message::Timeout);
+        let client_tasks = message_handler
+            .local_tasks
+            .by_ref()
+            .map(Message::ClientTask);
+        let server_tasks = message_handler
+            .remote_tasks
+            .by_ref()
+            .map(Message::ServerTask);
+
+        let replies = {
+            let (sender, receiver) = unbounded_channel();
+            for peer_id in node_ids {
                 trace!(
                     "term={}, send vote requests",
                     handle.election.current_term()
                 );
-                message_handler
-                    .node_ids_except(me)
-                    .map(|peer_id| with_context(peers[peer_id].request_vote(args.clone()), peer_id))
-                    .collect()
-            };
+                request_vote_sender(peers.inner[peer_id].clone(), sender.clone())
+                    .send((args.clone(), peer_id))
+                    .unwrap();
+            }
+            UnboundedReceiverStream::new(receiver).map(Message::RequestVoteResponse)
+        };
+
+        let messages = (election_timeout, client_tasks, server_tasks, replies).merge();
+        futures::pin_mut!(messages);
+
+        let mut votes_received = HashSet::from([handle.node_id]);
+        use LoopResult::{Elected, RestartAsCandidate, Shutdown, TransitToFollower};
+
+        let vote_result = 'collect_vote: {
             while votes_received.len() < majority_threshold {
-                select! {
-                    _ = election_timeout.next() => {
-                        break 'collect_vote RestartAsCandidate;
-                    }
-                    Some(task) = message_handler.remote_task_receiver.recv() => {
-                        let RemoteTaskResult { transit_to_follower } = task.handle(handle).await;
+                let Some(message) = messages.next().await else {
+                    continue;
+                };
+                match message {
+                    Message::Timeout => break 'collect_vote RestartAsCandidate,
+                    Message::ServerTask(task) => {
+                        let RemoteTaskResult {
+                            transit_to_follower,
+                        } = task.handle(handle).await;
                         if transit_to_follower {
                             break 'collect_vote TransitToFollower;
                         }
                     }
-                    Some(task) = message_handler.local_task_receiver.recv() => {
-                        match task {
-                            LocalTask::AppendEntries { sender, .. } => sender.send(None).unwrap(),
-                            LocalTask::GetTerm(sender) => sender.send(handle.election.current_term()).unwrap(),
-                            LocalTask::CheckLeader(sender) => sender.send(false).unwrap(),
-                            LocalTask::Shutdown(sender) => {
-                                sender.send(()).unwrap();
-                                break 'collect_vote Shutdown;
-                            }
+                    Message::ClientTask(task) => match task {
+                        LocalTask::AppendEntries { sender, .. } => sender.send(None).unwrap(),
+                        LocalTask::GetTerm(sender) => {
+                            sender.send(handle.election.current_term()).unwrap()
                         }
-                    }
-                    Some(FutureOutput { output: reply_result, context: peer_id }) = replies.next() => {
+                        LocalTask::CheckLeader(sender) => sender.send(false).unwrap(),
+                        LocalTask::Shutdown(sender) => {
+                            sender.send(()).unwrap();
+                            break 'collect_vote Shutdown;
+                        }
+                    },
+                    Message::RequestVoteResponse((reply_result, peer_id)) => {
                         let current_term = handle.election.current_term();
                         match reply_result {
                             Ok(reply) => {
@@ -100,7 +128,9 @@ impl Candidate {
                                     trace!("term={}, received outdated votes or non-granted votes, reply.term: {}", current_term, reply.term);
                                 }
                             }
-                            Err(e) => warn!("term={}, {}", handle.election.current_term(), e.to_string())
+                            Err(e) => {
+                                warn!("term={}, {}", handle.election.current_term(), e.to_string())
+                            }
                         }
                     }
                 }
@@ -123,6 +153,13 @@ impl Candidate {
             )),
         }
     }
+}
+
+enum Message {
+    Timeout,
+    ServerTask(RemoteTask),
+    ClientTask(LocalTask),
+    RequestVoteResponse(RequestVote<crate::raft::Result<RequestVoteReply>>),
 }
 
 #[derive(Debug)]

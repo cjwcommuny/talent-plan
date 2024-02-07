@@ -5,11 +5,15 @@ use crate::raft;
 use crate::raft::handle::Handle;
 use crate::raft::role::{append_entries, request_vote, Role};
 use crate::raft::rpc::{AppendEntriesArgs, AppendEntriesReply, RequestVoteArgs, RequestVoteReply};
-use crate::raft::TermId;
+use crate::raft::{NodeId, TermId};
 use async_trait::async_trait;
 
 use derive_new::new;
+use futures::SinkExt;
+use futures::{FutureExt, TryFutureExt};
+
 use std::fmt::{Debug, Formatter};
+
 use std::ops::Range;
 
 use crate::raft::message_handler::MessageHandler;
@@ -113,6 +117,15 @@ pub trait PeerEndPoint {
     async fn request_vote(&self, args: RequestVoteArgs) -> raft::Result<RequestVoteReply>;
     async fn append_entries(&self, args: AppendEntriesArgs) -> raft::Result<AppendEntriesReply>;
 }
+
+#[derive(Debug, new)]
+pub struct AppendEntriesContext {
+    pub follower_id: NodeId,
+    pub old_next_index: usize,
+}
+
+pub type RequestVote<T> = (T, NodeId);
+pub type AppendEntries<T> = (T, AppendEntriesContext);
 
 #[async_trait]
 impl<T> PeerEndPoint for Box<T>

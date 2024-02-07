@@ -1,7 +1,9 @@
 #![feature(type_alias_impl_trait)]
 #![feature(impl_trait_in_fn_trait_return)]
+#![feature(impl_trait_in_assoc_type)]
 #![feature(let_chains)]
 #![feature(result_option_inspect)]
+#![feature(never_type)]
 #[allow(unused_imports)]
 #[macro_use]
 extern crate log;

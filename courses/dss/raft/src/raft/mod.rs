@@ -25,6 +25,8 @@ mod message_handler;
 pub mod persister;
 mod role;
 mod rpc;
+mod sender;
+mod sink;
 
 use self::errors::*;
 use self::persister::*;
@@ -139,10 +141,11 @@ impl Raft {
         let message_handler = MessageHandler::new(
             peers
                 .into_iter()
-                .map(|client| Box::new(client) as _)
-                .collect(),
-            remote_task_receiver,
-            local_task_receiver,
+                .map(|client| Arc::new(client) as _)
+                .collect::<Vec<_>>()
+                .into(),
+            remote_task_receiver.into(),
+            local_task_receiver.into(),
         );
 
         // different node should has different seeds
